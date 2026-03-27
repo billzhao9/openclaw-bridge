@@ -458,7 +458,7 @@ ${nameMapping}
       name: "bridge_send_message",
       label: "Bridge Send Message",
       description:
-        "Send a message to another agent via the Hub and wait for their reply. Use this to relay questions or requests to agents not in the current channel.",
+        "Send a ONE-TIME message to another agent and wait for reply. Use for: '帮我问下XX', '跟XX说', 'ask XX'. Do NOT use this when user wants to SWITCH to another agent (use bridge_handoff instead).",
       parameters: Type.Object({
         agentId: Type.String({ description: "Target agent ID" }),
         message: Type.String({ description: "Message to send" }),
@@ -487,7 +487,7 @@ ${nameMapping}
       name: "bridge_handoff",
       label: "Bridge Handoff",
       description:
-        "Hand off the current conversation to another agent. The target agent will take over replying to the user.",
+        "Switch the conversation to another agent. MUST use this (not bridge_send_message) when user says: '让XX来和我聊', '换XX', '我要跟XX说话', '把XX叫来', 'switch to XX', 'let me talk to XX'. After handoff, all user messages will be forwarded to the target agent automatically.",
       parameters: Type.Object({
         agentId: Type.String({ description: "Target agent ID" }),
         reason: Type.String({ description: "Why the handoff is happening" }),
