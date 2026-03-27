@@ -159,64 +159,90 @@ ${nameMapping}
             api.logger.warn(`Message Relay connection failed: ${err.message}. Will retry.`);
           }
 
+          // Helper: call local gateway chat completions API
+          async function callGatewayAPI(payload: string): Promise<string> {
+            const configPath = process.env.OPENCLAW_CONFIG_PATH
+              || `${process.env.OPENCLAW_HOME || ''}/openclaw.json`;
+            let gatewayToken = '';
+            try {
+              const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
+              gatewayToken = raw.gateway?.auth?.token || '';
+            } catch { /* no token */ }
+
+            const url = `http://127.0.0.1:${entry.port}/v1/chat/completions`;
+            const res = await fetch(url, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                ...(gatewayToken ? { 'Authorization': `Bearer ${gatewayToken}` } : {}),
+              },
+              body: JSON.stringify({
+                model: 'openclaw/default',
+                messages: [{ role: 'user', content: payload }],
+              }),
+              signal: AbortSignal.timeout(55_000),
+            });
+
+            if (res.ok) {
+              const data = await res.json() as any;
+              return data.choices?.[0]?.message?.content || 'No response';
+            } else {
+              const text = await res.text();
+              throw new Error(`Gateway returned ${res.status}: ${text.substring(0, 200)}`);
+            }
+          }
+
           // Handle incoming handoff start (this agent is target)
           relayClient.on('handoff_start', (msg) => {
-            api.logger.info(`Handoff request: taking over session ${msg.sessionId} from ${msg.from}`);
+            api.logger.info(`[handoff] Taking over session ${msg.sessionId} from ${msg.from}`);
             relayClient!.send({ type: 'handoff_ack', sessionId: msg.sessionId, from: config.agentId });
           });
 
-          // Handle handoff end (this agent is being released)
+          // Handle handoff messages (this agent is target — process via API and reply)
+          relayClient.on('handoff_message', async (msg) => {
+            api.logger.info(`[handoff] Message from ${msg.from}: ${msg.payload}`);
+            try {
+              const reply = await callGatewayAPI(msg.payload);
+              api.logger.info(`[handoff] Reply (${reply.length} chars): ${reply.substring(0, 100)}`);
+              relayClient!.send({
+                type: 'handoff_reply',
+                sessionId: msg.sessionId,
+                from: config.agentId,
+                to: msg.from,
+                payload: reply,
+              });
+            } catch (err: any) {
+              api.logger.error(`[handoff] Error: ${err.message}`);
+              relayClient!.send({
+                type: 'handoff_reply',
+                sessionId: msg.sessionId,
+                from: config.agentId,
+                to: msg.from,
+                payload: `Error: ${err.message}`,
+              });
+            }
+          });
+
+          // Handle handoff end (this agent is being released OR proxy getting end notification)
           relayClient.on('handoff_end', (msg) => {
-            api.logger.info(`Handoff ended: session ${msg.sessionId}`);
+            api.logger.info(`[handoff] Session ${msg.sessionId} ended`);
+            if (proxySession.isInHandoff()) {
+              proxySession.clearSession();
+            }
           });
 
           // Handle switch notification (proxy side)
           relayClient.on('handoff_switch', (msg) => {
             proxySession.updateCurrentAgent(msg.to, msg.to);
-            api.logger.info(`Session switched to ${msg.to}`);
+            api.logger.info(`[handoff] Session switched to ${msg.to}`);
           });
 
           // Handle incoming relay messages — process via gateway chat completions API
           relayClient.on('message', async (msg) => {
-            api.logger.info(`[relay] Received message from ${msg.from}: ${msg.payload}`);
+            api.logger.info(`[relay] Message from ${msg.from}: ${msg.payload}`);
             try {
-              // Read gateway auth token from openclaw.json
-              const configPath = process.env.OPENCLAW_CONFIG_PATH
-                || `${process.env.OPENCLAW_HOME || ''}/openclaw.json`;
-              let gatewayToken = '';
-              try {
-                const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
-                gatewayToken = raw.gateway?.auth?.token || '';
-              } catch { /* no token */ }
-
-              const gatewayPort = entry.port;
-              const url = `http://127.0.0.1:${gatewayPort}/v1/chat/completions`;
-              api.logger.info(`[relay] Calling gateway API at ${url}`);
-
-              const res = await fetch(url, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  ...(gatewayToken ? { 'Authorization': `Bearer ${gatewayToken}` } : {}),
-                },
-                body: JSON.stringify({
-                  model: 'openclaw/default',
-                  messages: [{ role: 'user', content: msg.payload }],
-                }),
-                signal: AbortSignal.timeout(55_000),
-              });
-
-              let reply = '';
-              if (res.ok) {
-                const data = await res.json() as any;
-                reply = data.choices?.[0]?.message?.content || 'No response';
-                api.logger.info(`[relay] API reply (${reply.length} chars): ${reply.substring(0, 100)}`);
-              } else {
-                const text = await res.text();
-                api.logger.error(`[relay] API error ${res.status}: ${text.substring(0, 200)}`);
-                reply = `Error: Gateway returned ${res.status}`;
-              }
-
+              const reply = await callGatewayAPI(msg.payload);
+              api.logger.info(`[relay] Reply (${reply.length} chars): ${reply.substring(0, 100)}`);
               relayClient!.send({
                 type: 'message_reply',
                 replyTo: msg.id,
@@ -273,13 +299,18 @@ ${nameMapping}
 </messaging>`;
       }
 
-      // Add session status if in handoff
+      // Add session status if in handoff (proxy side)
       const session = proxySession.getSession();
       if (session) {
         context += `
 <session-status>
-当前对话已交接给 ${session.currentAgentName}。用户消息自动透传，无需处理。
-等待对方发起切换/结束指令。
+【重要】当前对话已交接给 ${session.currentAgentName} (${session.currentAgent})。
+你现在是消息中转代理，必须执行以下规则：
+1. 用户发的每条消息，你都必须立即调用 bridge_send_message(agentId="${session.currentAgent}", message="用户原文") 转发给对方
+2. 收到回复后，直接告诉用户：[${session.currentAgentName}] 回复内容
+3. 如果用户说"换回来"、"我要和你聊"，调用 bridge_handoff_end() 结束交接
+4. 如果用户说"换XX来"，调用 bridge_handoff_switch(agentId) 切换
+5. 不要自己回答用户的问题，所有内容都转发给 ${session.currentAgentName}
 </session-status>`;
       }
 
