@@ -176,6 +176,44 @@ ${nameMapping}
             api.logger.info(`Session switched to ${msg.to}`);
           });
 
+          // Handle incoming relay messages — process via openclaw agent CLI and reply
+          relayClient.on('message', async (msg) => {
+            api.logger.info(`Relay message from ${msg.from}: ${msg.payload}`);
+            try {
+              const { exec } = await import('child_process');
+              const safePayload = msg.payload.replace(/"/g, '\\"').replace(/\n/g, '\\n');
+              const cmd = `openclaw agent --message "${safePayload}" --local --json --timeout 50`;
+              exec(cmd, { timeout: 55_000, encoding: 'utf-8' }, (err, stdout) => {
+                let reply = '';
+                if (err) {
+                  reply = `Error: ${err.message}`;
+                } else {
+                  try {
+                    const parsed = JSON.parse(stdout);
+                    reply = parsed.reply || parsed.message || parsed.text || stdout.trim();
+                  } catch {
+                    reply = stdout.trim() || 'No response';
+                  }
+                }
+                relayClient!.send({
+                  type: 'message_reply',
+                  replyTo: msg.id,
+                  from: config.agentId,
+                  to: msg.from,
+                  payload: reply,
+                });
+              });
+            } catch (err: any) {
+              relayClient!.send({
+                type: 'message_reply',
+                replyTo: msg.id,
+                from: config.agentId,
+                to: msg.from,
+                payload: `Error: ${err.message}`,
+              });
+            }
+          });
+
           // Handle errors from hub
           relayClient.on('error', (msg) => {
             api.logger.error(`Hub error: [${msg.code}] ${msg.message}`);
