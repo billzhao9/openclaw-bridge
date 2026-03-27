@@ -15,6 +15,12 @@ export interface BridgeConfig {
   offlineThresholdMs?: number;
 }
 
+export interface ChannelInfo {
+  type: string;       // "discord", "slack", "web", etc.
+  channelId: string;  // platform-specific channel identifier
+  name: string;       // human-readable name, e.g. "#creators", "DM-user1"
+}
+
 export interface RegistryEntry {
   type: "gateway-registry";
   agentId: string;
@@ -26,6 +32,7 @@ export interface RegistryEntry {
   discordId: string | null;
   role: "normal" | "superuser";
   capabilities: string[];
+  channels: ChannelInfo[];
   registeredAt: string;
   lastHeartbeat: string;
   status: "online" | "offline";

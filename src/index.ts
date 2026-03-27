@@ -53,6 +53,7 @@ const bridgePlugin = {
       discordId: null,
       role: config.role,
       capabilities: [],
+      channels: [],
       registeredAt: new Date().toISOString(),
       lastHeartbeat: new Date().toISOString(),
       status: "online",

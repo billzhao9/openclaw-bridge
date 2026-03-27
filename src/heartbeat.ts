@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import type { BridgeConfig, RegistryEntry, PluginLogger } from "./types.js";
+import type { BridgeConfig, RegistryEntry, ChannelInfo, PluginLogger } from "./types.js";
 import type { BridgeRegistry } from "./registry.js";
 import type { BridgeFileOps } from "./file-ops.js";
 
@@ -95,7 +96,7 @@ export class BridgeHeartbeat {
         bindings?: Array<{ agentId: string; match: { channel: string; accountId: string } }>;
         channels?: {
           discord?: {
-            accounts?: Record<string, { token?: string }>;
+            accounts?: Record<string, { token?: string; channels?: Array<{ id?: string; channelId?: string; name?: string }> }>;
           };
         };
       };
@@ -121,8 +122,44 @@ export class BridgeHeartbeat {
       } catch {
         // Token decode failed — skip
       }
+
+      const channels = this.extractChannels(this.configPath);
+      this.entry.channels = channels;
     } catch {
       // Config read failed — skip this cycle
+    }
+  }
+
+  private extractChannels(configPath: string): ChannelInfo[] {
+    try {
+      const raw = readFileSync(configPath, "utf-8");
+      const config = JSON.parse(raw) as {
+        channels?: {
+          discord?: {
+            accounts?: Array<{
+              channels?: Array<{ id?: string; channelId?: string; name?: string }>;
+            }>;
+          };
+        };
+      };
+
+      const accounts = config.channels?.discord?.accounts;
+      if (!Array.isArray(accounts)) return [];
+
+      const result: ChannelInfo[] = [];
+      for (const account of accounts) {
+        if (!Array.isArray(account.channels)) continue;
+        for (const ch of account.channels) {
+          const channelId = ch.channelId ?? ch.id ?? "";
+          const name = ch.name ?? channelId;
+          if (channelId) {
+            result.push({ type: "discord", channelId, name });
+          }
+        }
+      }
+      return result;
+    } catch {
+      return [];
     }
   }
 }
