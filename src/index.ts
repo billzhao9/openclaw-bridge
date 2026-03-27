@@ -244,8 +244,10 @@ ${nameMapping}
       if (relayClient) {
         context += `
 <messaging>
-你可以通过 bridge_send_message 向任意在线 agent 传话并等待回复。
-你可以通过 bridge_handoff 将对话交给其他 agent 接管。
+当用户要求你联系、询问、传话给其他 agent 时：
+- 必须调用 bridge_send_message 工具发送消息并等待回复，不要建议用户去其他频道或 @mention。
+- 当用户要求切换对话对象时，调用 bridge_handoff 工具。
+- 这些工具通过 Hub 中转，无需共同频道即可通信。
 </messaging>`;
       }
 
