@@ -57,6 +57,13 @@
           "apiKey": { "type": "string" }
         }
       },
+      "messageRelay": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string" },
+          "apiKey": { "type": "string" }
+        }
+      },
       "heartbeatIntervalMs": { "type": "number" },
       "offlineThresholdMs": { "type": "number" }
     }
