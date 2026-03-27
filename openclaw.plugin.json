@@ -1,0 +1,64 @@
+{
+  "id": "openclaw-bridge",
+  "kind": "extension",
+  "uiHints": {
+    "role": {
+      "label": "Role",
+      "help": "normal = isolated workspace access only; superuser = cross-gateway access"
+    },
+    "agentId": {
+      "label": "Agent ID",
+      "help": "Unique identifier for this agent (e.g., pm, bot1, main)"
+    },
+    "agentName": {
+      "label": "Agent Display Name",
+      "help": "Human-readable name (e.g., PM Bot, Director Ma)"
+    },
+    "registry.baseUrl": {
+      "label": "OpenViking URL",
+      "placeholder": "http://69.5.7.190:1933",
+      "help": "OpenViking server for gateway registry"
+    },
+    "registry.apiKey": {
+      "label": "OpenViking API Key",
+      "sensitive": true
+    },
+    "fileRelay.baseUrl": {
+      "label": "FileRelay URL",
+      "placeholder": "http://69.5.7.190:3080",
+      "help": "FileRelay server for cross-machine file transfer"
+    },
+    "fileRelay.apiKey": {
+      "label": "FileRelay API Key",
+      "sensitive": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["role", "agentId", "agentName", "registry"],
+    "properties": {
+      "role": { "type": "string", "enum": ["normal", "superuser"] },
+      "agentId": { "type": "string" },
+      "agentName": { "type": "string" },
+      "registry": {
+        "type": "object",
+        "required": ["baseUrl"],
+        "properties": {
+          "provider": { "type": "string" },
+          "baseUrl": { "type": "string" },
+          "apiKey": { "type": "string" }
+        }
+      },
+      "fileRelay": {
+        "type": "object",
+        "properties": {
+          "baseUrl": { "type": "string" },
+          "apiKey": { "type": "string" }
+        }
+      },
+      "heartbeatIntervalMs": { "type": "number" },
+      "offlineThresholdMs": { "type": "number" }
+    }
+  }
+}
