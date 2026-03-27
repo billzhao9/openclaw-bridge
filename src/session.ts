@@ -9,6 +9,7 @@ let activeSession: ProxySession | null = null;
 
 export function setSession(session: ProxySession): void {
   activeSession = session;
+  console.log(`[session] SET handoff: sessionId=${session.sessionId} target=${session.currentAgent}`);
 }
 
 export function getSession(): ProxySession | null {
@@ -16,6 +17,7 @@ export function getSession(): ProxySession | null {
 }
 
 export function clearSession(): void {
+  console.log(`[session] CLEAR handoff (was: ${activeSession?.sessionId || 'none'})`);
   activeSession = null;
 }
 

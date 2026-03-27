@@ -301,6 +301,7 @@ ${nameMapping}
 
       // Add session status if in handoff (proxy side)
       const session = proxySession.getSession();
+      api.logger.info(`[bridge] before_prompt_build: handoff=${session ? 'YES session=' + session.sessionId + ' target=' + session.currentAgent : 'NO'}`);
       if (session) {
         context += `
 <session-status>
