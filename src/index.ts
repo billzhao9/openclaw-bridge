@@ -183,10 +183,9 @@ ${nameMapping}
               const { exec } = await import('child_process');
               const { platform } = await import('os');
               const safePayload = msg.payload.replace(/"/g, '\\"').replace(/\n/g, '\\n');
-              // Use npx to ensure openclaw is found regardless of PATH
-              const cmd = `npx openclaw agent --message "${safePayload}" --agent ${config.agentId} --timeout 50`;
+              const cmd = `openclaw agent --message "${safePayload}" --agent ${config.agentId} --timeout 50`;
               api.logger.info(`[relay] Executing: ${cmd}`);
-              exec(cmd, { timeout: 55_000, encoding: 'utf-8', env: { ...process.env } }, (err, stdout, stderr) => {
+              exec(cmd, { timeout: 55_000, encoding: 'utf-8', env: { ...process.env }, shell: true }, (err, stdout, stderr) => {
                 if (stderr) api.logger.warn(`[relay] stderr: ${stderr.substring(0, 200)}`);
                 let reply = '';
                 if (err && !stdout.trim()) {
