@@ -178,14 +178,19 @@ ${nameMapping}
 
           // Handle incoming relay messages — process via openclaw agent CLI and reply
           relayClient.on('message', async (msg) => {
-            api.logger.info(`Relay message from ${msg.from}: ${msg.payload}`);
+            api.logger.info(`[relay] Received message from ${msg.from}: ${msg.payload}`);
             try {
               const { exec } = await import('child_process');
+              const { platform } = await import('os');
               const safePayload = msg.payload.replace(/"/g, '\\"').replace(/\n/g, '\\n');
-              const cmd = `openclaw agent --message "${safePayload}" --agent ${config.agentId} --timeout 50`;
-              exec(cmd, { timeout: 55_000, encoding: 'utf-8' }, (err, stdout, stderr) => {
+              // Use npx to ensure openclaw is found regardless of PATH
+              const cmd = `npx openclaw agent --message "${safePayload}" --agent ${config.agentId} --timeout 50`;
+              api.logger.info(`[relay] Executing: ${cmd}`);
+              exec(cmd, { timeout: 55_000, encoding: 'utf-8', env: { ...process.env } }, (err, stdout, stderr) => {
+                if (stderr) api.logger.warn(`[relay] stderr: ${stderr.substring(0, 200)}`);
                 let reply = '';
                 if (err && !stdout.trim()) {
+                  api.logger.error(`[relay] exec error: ${err.message}`);
                   reply = `Error: ${err.message}`;
                 } else {
                   // Filter out plugin log lines (contain ANSI codes or [plugins])
@@ -194,6 +199,7 @@ ${nameMapping}
                     return stripped && !stripped.startsWith('[plugins]') && !stripped.startsWith('[');
                   });
                   reply = lines.join('\n').trim() || 'No response';
+                  api.logger.info(`[relay] Reply (${reply.length} chars): ${reply.substring(0, 100)}`);
                 }
                 relayClient!.send({
                   type: 'message_reply',
