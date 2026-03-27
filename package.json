@@ -9,9 +9,11 @@
     ]
   },
   "dependencies": {
-    "@sinclair/typebox": "^0.34.0"
+    "@sinclair/typebox": "^0.34.0",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
+    "@types/ws": "^8.18.1",
     "typescript": "^5.7.0"
   }
 }

@@ -1,3 +1,8 @@
+export interface MessageRelayConfig {
+  url: string;       // ws://host:3080/ws
+  apiKey: string;
+}
+
 export interface BridgeConfig {
   role: "normal" | "superuser";
   agentId: string;
@@ -11,6 +16,7 @@ export interface BridgeConfig {
     baseUrl: string;
     apiKey?: string;
   };
+  messageRelay?: MessageRelayConfig;
   heartbeatIntervalMs?: number;
   offlineThresholdMs?: number;
 }
