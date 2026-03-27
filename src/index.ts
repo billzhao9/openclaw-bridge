@@ -176,39 +176,56 @@ ${nameMapping}
             api.logger.info(`Session switched to ${msg.to}`);
           });
 
-          // Handle incoming relay messages — process via openclaw agent CLI and reply
+          // Handle incoming relay messages — process via gateway chat completions API
           relayClient.on('message', async (msg) => {
             api.logger.info(`[relay] Received message from ${msg.from}: ${msg.payload}`);
             try {
-              const { exec } = await import('child_process');
-              const { platform } = await import('os');
-              const safePayload = msg.payload.replace(/"/g, '\\"').replace(/\n/g, '\\n');
-              const cmd = `openclaw agent --message "${safePayload}" --agent ${config.agentId} --timeout 50`;
-              api.logger.info(`[relay] Executing: ${cmd}`);
-              exec(cmd, { timeout: 55_000, encoding: 'utf-8', env: { ...process.env }, shell: true }, (err, stdout, stderr) => {
-                if (stderr) api.logger.warn(`[relay] stderr: ${stderr.substring(0, 200)}`);
-                let reply = '';
-                if (err && !stdout.trim()) {
-                  api.logger.error(`[relay] exec error: ${err.message}`);
-                  reply = `Error: ${err.message}`;
-                } else {
-                  // Filter out plugin log lines (contain ANSI codes or [plugins])
-                  const lines = stdout.split('\n').filter(line => {
-                    const stripped = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
-                    return stripped && !stripped.startsWith('[plugins]') && !stripped.startsWith('[');
-                  });
-                  reply = lines.join('\n').trim() || 'No response';
-                  api.logger.info(`[relay] Reply (${reply.length} chars): ${reply.substring(0, 100)}`);
-                }
-                relayClient!.send({
-                  type: 'message_reply',
-                  replyTo: msg.id,
-                  from: config.agentId,
-                  to: msg.from,
-                  payload: reply,
-                });
+              // Read gateway auth token from openclaw.json
+              const configPath = process.env.OPENCLAW_CONFIG_PATH
+                || `${process.env.OPENCLAW_HOME || ''}/openclaw.json`;
+              let gatewayToken = '';
+              try {
+                const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
+                gatewayToken = raw.gateway?.auth?.token || '';
+              } catch { /* no token */ }
+
+              const gatewayPort = entry.port;
+              const url = `http://127.0.0.1:${gatewayPort}/v1/chat/completions`;
+              api.logger.info(`[relay] Calling gateway API at ${url}`);
+
+              const res = await fetch(url, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  ...(gatewayToken ? { 'Authorization': `Bearer ${gatewayToken}` } : {}),
+                },
+                body: JSON.stringify({
+                  model: 'openclaw/default',
+                  messages: [{ role: 'user', content: msg.payload }],
+                }),
+                signal: AbortSignal.timeout(55_000),
+              });
+
+              let reply = '';
+              if (res.ok) {
+                const data = await res.json() as any;
+                reply = data.choices?.[0]?.message?.content || 'No response';
+                api.logger.info(`[relay] API reply (${reply.length} chars): ${reply.substring(0, 100)}`);
+              } else {
+                const text = await res.text();
+                api.logger.error(`[relay] API error ${res.status}: ${text.substring(0, 200)}`);
+                reply = `Error: Gateway returned ${res.status}`;
+              }
+
+              relayClient!.send({
+                type: 'message_reply',
+                replyTo: msg.id,
+                from: config.agentId,
+                to: msg.from,
+                payload: reply,
               });
             } catch (err: any) {
+              api.logger.error(`[relay] Error: ${err.message}`);
               relayClient!.send({
                 type: 'message_reply',
                 replyTo: msg.id,
