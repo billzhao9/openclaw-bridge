@@ -41,6 +41,12 @@ export function parseConfig(raw: unknown): BridgeConfig {
           apiKey: (obj.fileRelay as Record<string, unknown>).apiKey as string | undefined,
         }
       : undefined,
+    messageRelay: obj.messageRelay
+      ? {
+          url: (obj.messageRelay as Record<string, unknown>).url as string,
+          apiKey: (obj.messageRelay as Record<string, unknown>).apiKey as string,
+        }
+      : undefined,
     heartbeatIntervalMs:
       typeof obj.heartbeatIntervalMs === "number"
         ? obj.heartbeatIntervalMs

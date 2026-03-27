@@ -7,6 +7,8 @@ import { BridgeFileOps } from "./file-ops.js";
 import { BridgeRestart } from "./restart.js";
 import { assertPermission } from "./permissions.js";
 import { discoverAll, whois } from "./discovery.js";
+import { MessageRelayClient } from "./message-relay.js";
+import * as proxySession from "./session.js";
 import type { OpenClawPluginApi, RegistryEntry } from "./types.js";
 
 function resolveWorkspacePath(agentId: string): string {
@@ -39,6 +41,8 @@ const bridgePlugin = {
     const registry = new BridgeRegistry(config, api.logger);
     const fileOps = new BridgeFileOps(config, machineId, workspacePath, api.logger);
     const restartManager = new BridgeRestart(config, machineId, registry, api.logger);
+
+    let relayClient: MessageRelayClient | null = null;
 
     const offlineThresholdMs = config.offlineThresholdMs ?? 120_000;
 
@@ -145,9 +149,48 @@ ${nameMapping}
       async start() {
         await heartbeat.start();
         await refreshAgentContext();
+
+        // Initialize Message Relay if configured
+        if (config.messageRelay) {
+          relayClient = new MessageRelayClient(config.agentId, config.messageRelay, api.logger);
+          try {
+            await relayClient.connect();
+          } catch (err: any) {
+            api.logger.warn(`Message Relay connection failed: ${err.message}. Will retry.`);
+          }
+
+          // Handle incoming handoff start (this agent is target)
+          relayClient.on('handoff_start', (msg) => {
+            api.logger.info(`Handoff request: taking over session ${msg.sessionId} from ${msg.from}`);
+            relayClient!.send({ type: 'handoff_ack', sessionId: msg.sessionId, from: config.agentId });
+          });
+
+          // Handle handoff end (this agent is being released)
+          relayClient.on('handoff_end', (msg) => {
+            api.logger.info(`Handoff ended: session ${msg.sessionId}`);
+          });
+
+          // Handle switch notification (proxy side)
+          relayClient.on('handoff_switch', (msg) => {
+            proxySession.updateCurrentAgent(msg.to, msg.to);
+            api.logger.info(`Session switched to ${msg.to}`);
+          });
+
+          // Handle errors from hub
+          relayClient.on('error', (msg) => {
+            api.logger.error(`Hub error: [${msg.code}] ${msg.message}`);
+            if (msg.code === 'AGENT_DISCONNECTED') {
+              proxySession.clearSession();
+            }
+          });
+        }
+
         api.logger.info(`openclaw-bridge: initialized (${config.agentId}, role=${config.role})`);
       },
       async stop() {
+        if (relayClient) {
+          await relayClient.disconnect();
+        }
         await heartbeat.stop();
       },
     });
@@ -155,9 +198,30 @@ ${nameMapping}
     // Auto-inject bridge context into every prompt (priority 90 = after OpenViking's recall)
     api.on("before_prompt_build", async () => {
       await refreshAgentContext();
-      if (cachedAgentList) {
-        return { prependContext: cachedAgentList };
+      if (!cachedAgentList) return;
+
+      let context = cachedAgentList;
+
+      // Add messaging capability description
+      if (relayClient) {
+        context += `
+<messaging>
+你可以通过 bridge_send_message 向任意在线 agent 传话并等待回复。
+你可以通过 bridge_handoff 将对话交给其他 agent 接管。
+</messaging>`;
       }
+
+      // Add session status if in handoff
+      const session = proxySession.getSession();
+      if (session) {
+        context += `
+<session-status>
+当前对话已交接给 ${session.currentAgentName}。用户消息自动透传，无需处理。
+等待对方发起切换/结束指令。
+</session-status>`;
+      }
+
+      return { prependContext: context };
     }, { priority: 10 });
 
     api.registerTool({
@@ -283,6 +347,110 @@ ${nameMapping}
         const target = await registry.findAgent(params.agentId as string, offlineThresholdMs);
         if (!target) return { error: `Agent "${params.agentId}" not found` };
         return restartManager.restart(target);
+      },
+    });
+
+    // ── Messaging tools (require Message Relay) ──
+
+    api.registerTool({
+      name: "bridge_send_message",
+      label: "Bridge Send Message",
+      description:
+        "Send a message to another agent via the Hub and wait for their reply. Use this to relay questions or requests to agents not in the current channel.",
+      parameters: Type.Object({
+        agentId: Type.String({ description: "Target agent ID" }),
+        message: Type.String({ description: "Message to send" }),
+      }),
+      async execute(_id, params) {
+        if (!relayClient?.isConnected) {
+          return { error: "Message Relay Hub is not connected" };
+        }
+        const msgId = `msg_${Date.now()}`;
+        try {
+          const reply = await relayClient.sendAndWait({
+            type: "message",
+            id: msgId,
+            from: config.agentId,
+            to: params.agentId as string,
+            payload: params.message as string,
+          });
+          return { from: reply.from, reply: reply.payload };
+        } catch (err: any) {
+          return { error: err.message };
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "bridge_handoff",
+      label: "Bridge Handoff",
+      description:
+        "Hand off the current conversation to another agent. The target agent will take over replying to the user.",
+      parameters: Type.Object({
+        agentId: Type.String({ description: "Target agent ID" }),
+        reason: Type.String({ description: "Why the handoff is happening" }),
+      }),
+      async execute(_id, params) {
+        if (!relayClient?.isConnected) {
+          return { error: "Message Relay Hub is not connected" };
+        }
+        try {
+          const ack = await relayClient.sendAndWait({
+            type: "handoff_start",
+            from: config.agentId,
+            to: params.agentId as string,
+            sessionId: "",
+            reason: params.reason as string,
+          }, 15_000);
+          proxySession.setSession({
+            sessionId: ack.sessionId,
+            originAgent: config.agentId,
+            currentAgent: params.agentId as string,
+            currentAgentName: params.agentId as string,
+          });
+          return { status: "handoff_active", sessionId: ack.sessionId, handedOffTo: params.agentId };
+        } catch (err: any) {
+          return { error: `Handoff failed: ${err.message}` };
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "bridge_handoff_end",
+      label: "Bridge Handoff End",
+      description:
+        "End the current handoff session and return control to the original agent.",
+      parameters: Type.Object({}),
+      async execute() {
+        const session = proxySession.getSession();
+        if (!session) return { error: "No active handoff session" };
+        if (!relayClient?.isConnected) return { error: "Hub not connected" };
+        relayClient.send({ type: "handoff_end", sessionId: session.sessionId });
+        proxySession.clearSession();
+        return { status: "handoff_ended", returnedTo: session.originAgent };
+      },
+    });
+
+    api.registerTool({
+      name: "bridge_handoff_switch",
+      label: "Bridge Handoff Switch",
+      description:
+        "Switch the current handoff to a different agent without ending the session.",
+      parameters: Type.Object({
+        agentId: Type.String({ description: "New target agent ID" }),
+      }),
+      async execute(_id, params) {
+        const session = proxySession.getSession();
+        if (!session) return { error: "No active handoff session" };
+        if (!relayClient?.isConnected) return { error: "Hub not connected" };
+        relayClient.send({
+          type: "handoff_switch",
+          sessionId: session.sessionId,
+          from: session.currentAgent,
+          to: params.agentId as string,
+        });
+        proxySession.updateCurrentAgent(params.agentId as string, params.agentId as string);
+        return { status: "switched", newAgent: params.agentId };
       },
     });
   },
