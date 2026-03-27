@@ -182,18 +182,18 @@ ${nameMapping}
             try {
               const { exec } = await import('child_process');
               const safePayload = msg.payload.replace(/"/g, '\\"').replace(/\n/g, '\\n');
-              const cmd = `openclaw agent --message "${safePayload}" --local --json --timeout 50`;
-              exec(cmd, { timeout: 55_000, encoding: 'utf-8' }, (err, stdout) => {
+              const cmd = `openclaw agent --message "${safePayload}" --agent ${config.agentId} --timeout 50`;
+              exec(cmd, { timeout: 55_000, encoding: 'utf-8' }, (err, stdout, stderr) => {
                 let reply = '';
-                if (err) {
+                if (err && !stdout.trim()) {
                   reply = `Error: ${err.message}`;
                 } else {
-                  try {
-                    const parsed = JSON.parse(stdout);
-                    reply = parsed.reply || parsed.message || parsed.text || stdout.trim();
-                  } catch {
-                    reply = stdout.trim() || 'No response';
-                  }
+                  // Filter out plugin log lines (contain ANSI codes or [plugins])
+                  const lines = stdout.split('\n').filter(line => {
+                    const stripped = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
+                    return stripped && !stripped.startsWith('[plugins]') && !stripped.startsWith('[');
+                  });
+                  reply = lines.join('\n').trim() || 'No response';
                 }
                 relayClient!.send({
                   type: 'message_reply',
