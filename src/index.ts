@@ -292,10 +292,18 @@ ${nameMapping}
       if (relayClient) {
         context += `
 <messaging>
-当用户要求你联系、询问、传话给其他 agent 时：
-- 必须调用 bridge_send_message 工具发送消息并等待回复，不要建议用户去其他频道或 @mention。
-- 当用户要求切换对话对象时，调用 bridge_handoff 工具。
-- 这些工具通过 Hub 中转，无需共同频道即可通信。
+跨 Agent 通信工具使用规则（必须严格遵守）：
+
+1. 传话模式 — 用户说"帮我问下XX"、"跟XX说"、"问XX一个问题"：
+   → 调用 bridge_send_message(agentId, message) 发消息并等待回复
+   → 收到回复后转达给用户
+
+2. 切换模式 — 用户说"让XX来和我聊"、"换XX"、"我要跟XX说话"、"把XX叫来"：
+   → 必须调用 bridge_handoff(agentId, reason) 而不是 bridge_send_message
+   → bridge_handoff 会建立持久会话，之后用户的所有消息都转发给目标 agent
+   → 这是完全不同的工具，不要混淆
+
+不要建议用户去其他频道或 @mention，这些工具通过 Hub 中转，无需共同频道。
 </messaging>`;
       }
 
