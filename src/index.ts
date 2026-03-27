@@ -497,13 +497,23 @@ ${nameMapping}
           return { error: "Message Relay Hub is not connected" };
         }
         try {
-          const ack = await relayClient.sendAndWait({
-            type: "handoff_start",
-            from: config.agentId,
-            to: params.agentId as string,
-            sessionId: "",
-            reason: params.reason as string,
-          }, 15_000);
+          // Use one-shot handler instead of sendAndWait (sessionId is "" at send time)
+          const ack = await new Promise<any>((resolve, reject) => {
+            const timer = setTimeout(() => {
+              reject(new Error("Handoff timeout — target agent did not respond"));
+            }, 15_000);
+            relayClient!.on('handoff_ack', (msg) => {
+              clearTimeout(timer);
+              resolve(msg);
+            });
+            relayClient!.send({
+              type: "handoff_start",
+              from: config.agentId,
+              to: params.agentId as string,
+              sessionId: "",
+              reason: params.reason as string,
+            });
+          });
           proxySession.setSession({
             sessionId: ack.sessionId,
             originAgent: config.agentId,
