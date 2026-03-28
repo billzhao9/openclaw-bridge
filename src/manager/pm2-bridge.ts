@@ -3,8 +3,10 @@ import { promisify } from "node:util";
 import { platform } from "node:os";
 
 const _exec = promisify(exec);
-const execAsync = (cmd: string, opts?: Record<string, unknown>) =>
-  _exec(cmd, { windowsHide: true, encoding: "utf-8", ...opts } as any);
+const execAsync = async (cmd: string, opts?: Record<string, unknown>) => {
+  const result = await _exec(cmd, { windowsHide: true, encoding: "utf-8", ...opts } as any);
+  return { stdout: result.stdout as unknown as string, stderr: result.stderr as unknown as string };
+};
 const IS_WIN = platform() === "win32";
 
 export interface PM2Process {

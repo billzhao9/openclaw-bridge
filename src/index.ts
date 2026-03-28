@@ -103,7 +103,7 @@ const bridgePlugin = {
         const configPath = process.env.OPENCLAW_CONFIG_PATH!;
         const fresh = JSON.parse(readFileSync(configPath, 'utf-8'));
         const freshBridgeConfig = fresh.plugins?.entries?.['openclaw-bridge']?.config;
-        if (freshBridgeConfig?.messageRelay && !api.pluginConfig.messageRelay) {
+        if (freshBridgeConfig?.messageRelay && !(api.pluginConfig as any).messageRelay) {
           (api.pluginConfig as any).messageRelay = freshBridgeConfig.messageRelay;
         }
       } catch { /* use original */ }

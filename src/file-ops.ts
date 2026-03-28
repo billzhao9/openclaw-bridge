@@ -65,7 +65,7 @@ export class BridgeFileOps {
   async sendFile(
     target: RegistryEntry,
     localRelativePath: string,
-  ): Promise<{ delivered: boolean; message: string }> {
+  ): Promise<{ delivered: boolean; message: string; filename?: string; renamed?: boolean }> {
     const sourcePath = this.validatePathWithinWorkspace(localRelativePath, this.workspacePath);
 
     if (this.isSameMachine(target)) {

@@ -1,18 +1,27 @@
 {
   "name": "openclaw-bridge",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "author": "Bill Zhao (https://www.linkedin.com/in/billzhaodi/)",
-  "description": "Cross-gateway communication plugin for OpenClaw — agent discovery, file transfer, real-time messaging, and session handoff",
+  "description": "OpenClaw plugin for cross-gateway communication — agent discovery, file transfer, real-time messaging, session handoff, and local process management. Install as plugin: openclaw plugins install openclaw-bridge",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
   "bin": {
-    "openclaw-bridge": "src/cli.ts"
+    "openclaw-bridge": "dist/cli.js"
   },
   "openclaw": {
     "extensions": [
-      "./src/index.ts"
+      "./dist/index.js"
     ]
   },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
   "dependencies": {
     "@sinclair/typebox": "^0.34.0",
     "ws": "^8.20.0"
@@ -23,6 +32,7 @@
   },
   "keywords": [
     "openclaw",
+    "openclaw-plugin",
     "bridge",
     "multi-agent",
     "gateway",
