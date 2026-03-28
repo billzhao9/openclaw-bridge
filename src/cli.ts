@@ -771,7 +771,23 @@ async function cmdUpgrade(): Promise<void> {
   try {
     const pluginList = run("openclaw plugins list", { silent: true });
     if (pluginList.includes("openclaw-bridge")) {
-      console.log("  Found openclaw-bridge plugin. Updating...");
+      console.log("  Found openclaw-bridge plugin. Removing old version...");
+      try {
+        run("openclaw plugins uninstall openclaw-bridge", { silent: true });
+      } catch {
+        // If uninstall command doesn't exist, try to find and delete the directory
+        const extensionsDirs = [
+          join(homedir(), ".openclaw", "extensions", "openclaw-bridge"),
+          join(homedir(), "openclaw-extensions", "openclaw-bridge"),
+        ];
+        for (const dir of extensionsDirs) {
+          if (existsSync(dir)) {
+            console.log(`  Removing ${dir}...`);
+            run(`rm -rf "${dir}"`, { silent: true });
+          }
+        }
+      }
+      console.log("  Installing new version...");
       runInherit("openclaw plugins install openclaw-bridge");
       updatedPlugin = true;
       console.log("  Plugin updated.");
