@@ -759,6 +759,63 @@ async function cmdDoctor(): Promise<void> {
   console.log(`\n${failCount === 0 ? "All checks passed." : `${failCount} issue(s) found.`}\n`);
 }
 
+async function cmdUpgrade(): Promise<void> {
+  console.log("\nOpenClaw Bridge — Upgrade");
+  console.log("==========================\n");
+
+  let updatedPlugin = false;
+  let updatedCli = false;
+
+  // 1. Check if installed as OpenClaw plugin
+  console.log("Checking OpenClaw plugin installation...");
+  try {
+    const pluginList = run("openclaw plugins list", { silent: true });
+    if (pluginList.includes("openclaw-bridge")) {
+      console.log("  Found openclaw-bridge plugin. Updating...");
+      runInherit("openclaw plugins install openclaw-bridge");
+      updatedPlugin = true;
+      console.log("  Plugin updated.");
+    } else {
+      console.log("  Not installed as OpenClaw plugin.");
+    }
+  } catch {
+    console.log("  openclaw CLI not found or plugins command failed. Skipping plugin check.");
+  }
+
+  // 2. Check if installed as global npm package
+  console.log("\nChecking global npm installation...");
+  try {
+    const globalPath = run("npm list -g openclaw-bridge --depth=0", { silent: true });
+    if (globalPath.includes("openclaw-bridge")) {
+      console.log("  Found global openclaw-bridge. Updating...");
+      runInherit("npm install -g openclaw-bridge");
+      updatedCli = true;
+      console.log("  CLI updated.");
+    } else {
+      console.log("  Not installed as global npm package.");
+    }
+  } catch {
+    console.log("  Not installed as global npm package.");
+  }
+
+  // 3. If neither found, suggest installation
+  if (!updatedPlugin && !updatedCli) {
+    console.log("\nopenclaw-bridge is not installed. Choose an installation method:");
+    console.log("  1. As OpenClaw plugin:  openclaw plugins install openclaw-bridge");
+    console.log("  2. As CLI tool:         npm install -g openclaw-bridge");
+    console.log("  3. Both (recommended for full functionality)");
+  } else {
+    // Print new version
+    try {
+      const ver = run("npm view openclaw-bridge version", { silent: true });
+      console.log(`\nUpgraded to openclaw-bridge v${ver.trim()}`);
+    } catch {
+      console.log("\nUpgrade complete.");
+    }
+  }
+  console.log();
+}
+
 // ── Usage ─────────────────────────────────────────────────────────────────────
 
 function printUsage(): void {
@@ -779,6 +836,7 @@ Commands:
   clean-sessions         Clean old session files (*.deleted.*, *.reset.*, *.old-session*)
   add-agent              Wizard to create a new agent instance
   doctor                 Diagnose common issues
+  upgrade                Upgrade openclaw-bridge (plugin + CLI)
 
 Examples:
   openclaw-bridge setup
@@ -827,6 +885,9 @@ const arg = process.argv[3];
       break;
     case "doctor":
       await cmdDoctor();
+      break;
+    case "upgrade":
+      await cmdUpgrade();
       break;
     case "--help":
     case "-h":
