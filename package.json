@@ -5,6 +5,9 @@
   "description": "Cross-gateway communication plugin for OpenClaw — agent discovery, file transfer, real-time messaging, and session handoff",
   "type": "module",
   "main": "src/index.ts",
+  "bin": {
+    "openclaw-bridge": "src/cli.ts"
+  },
   "openclaw": {
     "extensions": [
       "./src/index.ts"
