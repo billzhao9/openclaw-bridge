@@ -71,7 +71,7 @@ export class BridgeFileOps {
     if (this.isSameMachine(target)) {
       const destDir = join(target.workspacePath, "_inbox", this.config.agentId);
       await mkdir(destDir, { recursive: true });
-      const originalFilename = localRelativePath.split("/").pop()!;
+      const originalFilename = localRelativePath.split(/[\\/]/).pop()!;
       const rawDestPath = join(destDir, originalFilename);
       const destPath = await deduplicatePath(rawDestPath);
       await copyFile(sourcePath, destPath);
@@ -97,7 +97,7 @@ export class BridgeFileOps {
       body: JSON.stringify({
         fromAgent: this.config.agentId,
         toAgent: target.agentId,
-        filename: localRelativePath.split("/").pop()!,
+        filename: localRelativePath.split(/[\\/]/).pop()!,
         content: content.toString("base64"),
         metadata: {},
       }),
@@ -181,7 +181,7 @@ export class BridgeFileOps {
       body: JSON.stringify({
         fromAgent: this.config.agentId,
         toAgent: target.agentId,
-        filename: relativePath.split("/").pop()!,
+        filename: relativePath.split(/[\\/]/).pop()!,
         content: Buffer.from(content).toString("base64"),
         metadata: { writeToPath: relativePath },
       }),
