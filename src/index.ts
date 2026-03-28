@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { Type } from "@sinclair/typebox";
 import { parseConfig, getMachineId } from "./config.js";
 import { BridgeRegistry } from "./registry.js";
@@ -26,6 +26,66 @@ function resolveWorkspacePath(agentId: string): string {
   return process.env.OPENCLAW_WORKSPACE_PATH ?? "";
 }
 
+/**
+ * Auto-patch openclaw.json with recommended bridge settings.
+ * Adds messageRelay config (derived from fileRelay) and chatCompletions endpoint.
+ * Returns list of changes made.
+ */
+function autoPatchConfig(logger: { info: (...a: any[]) => void; warn: (...a: any[]) => void }): string[] {
+  const configPath = process.env.OPENCLAW_CONFIG_PATH;
+  if (!configPath) return [];
+
+  try {
+    const raw = readFileSync(configPath, 'utf-8');
+    const config = JSON.parse(raw);
+    const changes: string[] = [];
+
+    // 1. Auto-add messageRelay from fileRelay URL
+    const bridgeConfig = config.plugins?.entries?.['openclaw-bridge']?.config;
+    if (bridgeConfig && !bridgeConfig.messageRelay && bridgeConfig.fileRelay?.baseUrl) {
+      const baseUrl = bridgeConfig.fileRelay.baseUrl as string;
+      const wsUrl = baseUrl.replace(/^http/, 'ws') + '/ws';
+      bridgeConfig.messageRelay = {
+        url: wsUrl,
+        apiKey: bridgeConfig.fileRelay.apiKey || '',
+      };
+      changes.push(`Added messageRelay.url = ${wsUrl} (derived from fileRelay)`);
+    }
+
+    // 2. Auto-enable chatCompletions
+    if (!config.gateway?.http?.endpoints?.chatCompletions?.enabled) {
+      config.gateway = config.gateway || {};
+      config.gateway.http = config.gateway.http || {};
+      config.gateway.http.endpoints = config.gateway.http.endpoints || {};
+      config.gateway.http.endpoints.chatCompletions = { enabled: true };
+      changes.push('Enabled gateway.http.endpoints.chatCompletions');
+    }
+
+    // 3. Auto-set dmHistoryLimit to 0 if not set (OpenViking handles memory)
+    const discordAccounts = config.channels?.discord?.accounts;
+    if (discordAccounts) {
+      for (const [accountId, account] of Object.entries(discordAccounts)) {
+        const acc = account as Record<string, unknown>;
+        if (acc.dmPolicy && acc.dmHistoryLimit === undefined) {
+          acc.dmHistoryLimit = 0;
+          changes.push(`Set dmHistoryLimit=0 for discord account "${accountId}"`);
+        }
+      }
+    }
+
+    if (changes.length > 0) {
+      writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+      logger.info(`[bridge] Auto-patched openclaw.json (${changes.length} changes):`);
+      changes.forEach(c => logger.info(`  - ${c}`));
+    }
+
+    return changes;
+  } catch (err: any) {
+    logger.warn(`[bridge] Auto-patch failed: ${err.message}`);
+    return [];
+  }
+}
+
 const bridgePlugin = {
   id: "openclaw-bridge",
   name: "OpenClaw Bridge",
@@ -33,6 +93,21 @@ const bridgePlugin = {
   kind: "extension" as const,
 
   register(api: OpenClawPluginApi) {
+    // Auto-patch missing config on first run (writes to openclaw.json for next restart)
+    const patches = autoPatchConfig(api.logger);
+
+    // If we patched messageRelay, also update the in-memory pluginConfig
+    if (patches.length > 0) {
+      try {
+        const configPath = process.env.OPENCLAW_CONFIG_PATH!;
+        const fresh = JSON.parse(readFileSync(configPath, 'utf-8'));
+        const freshBridgeConfig = fresh.plugins?.entries?.['openclaw-bridge']?.config;
+        if (freshBridgeConfig?.messageRelay && !api.pluginConfig.messageRelay) {
+          (api.pluginConfig as any).messageRelay = freshBridgeConfig.messageRelay;
+        }
+      } catch { /* use original */ }
+    }
+
     const config = parseConfig(api.pluginConfig);
     const machineId = getMachineId();
     const port = parseInt(process.env.OPENCLAW_GATEWAY_PORT ?? "18789", 10);
