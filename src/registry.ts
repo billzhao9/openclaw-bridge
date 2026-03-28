@@ -46,8 +46,14 @@ export class BridgeRegistry {
         body: JSON.stringify(entry),
       });
       if (!res.ok) {
-        // Re-register if heartbeat fails
         await this.register(entry);
+        return;
+      }
+      // Check for registry-level agentId conflict
+      const body = await res.json() as { error?: string; existingMachine?: string };
+      if (body.error === "agentId_conflict") {
+        this.logger.warn(`openclaw-bridge: registry conflict — agentId "${entry.agentId}" belongs to machine "${body.existingMachine}", skipping heartbeat`);
+        // Don't re-register — the WebSocket conflict handler will rename us
       }
     } catch (err) {
       this.logger.warn(`openclaw-bridge: heartbeat failed, re-registering: ${String(err)}`);

@@ -248,6 +248,25 @@ ${nameMapping}
             api.logger.info(`[bridge] Conflict rename: ${entry.agentId} → ${newAgentId}, ${entry.agentName} → ${newAgentName}`);
             entry.agentId = newAgentId;
             entry.agentName = newAgentName;
+
+            // Persist the renamed agentId to openclaw.json so it survives restarts
+            const configPath = process.env.OPENCLAW_CONFIG_PATH;
+            if (configPath) {
+              try {
+                const raw = readFileSync(configPath, "utf-8");
+                const cfg = JSON.parse(raw);
+                const bridgeCfg = cfg.plugins?.entries?.["openclaw-bridge"]?.config;
+                if (bridgeCfg) {
+                  const oldId = bridgeCfg.agentId;
+                  bridgeCfg.agentId = newAgentId;
+                  bridgeCfg.agentName = newAgentName;
+                  writeFileSync(configPath, JSON.stringify(cfg, null, 2), "utf-8");
+                  api.logger.info(`[bridge] Permanently renamed in ${configPath}: ${oldId} → ${newAgentId}`);
+                }
+              } catch (err: any) {
+                api.logger.warn(`[bridge] Failed to persist rename to config: ${err.message}`);
+              }
+            }
           });
           try {
             await relayClient.connect();
