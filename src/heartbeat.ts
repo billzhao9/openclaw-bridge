@@ -90,10 +90,11 @@ export class BridgeHeartbeat {
   }
 
   private detectVisionSupport(): boolean {
+    // Explicit config override takes priority
     if (this.config.supportsVision !== undefined) {
       return this.config.supportsVision;
     }
-    if (!this.configPath) return false;
+    if (!this.configPath) return true; // Default to true — most models support vision
     try {
       const raw = readFileSync(this.configPath, "utf-8");
       const config = JSON.parse(raw) as {
@@ -102,14 +103,17 @@ export class BridgeHeartbeat {
           list?: Array<{ id?: string; name?: string }>;
         };
       };
-      const defaultModel = config.models?.default ?? "";
-      const visionPatterns = [
-        "gpt-4o", "gpt-4-vision", "claude-3", "claude-sonnet", "claude-opus",
-        "gemini", "gemini-pro", "gemini-2", "pixtral", "llava",
+      const defaultModel = (config.models?.default ?? "").toLowerCase();
+      if (!defaultModel) return true;
+      // Known text-only models that do NOT support vision
+      const textOnlyPatterns = [
+        "minimax", "m2.7", "deepseek-r1", "deepseek-v2", "qwen-turbo",
+        "yi-lightning", "glm-3", "glm-4-flash", "mistral-small",
+        "codestral", "command-r", "phi-3-mini", "phi-3-small",
       ];
-      return visionPatterns.some((p) => defaultModel.toLowerCase().includes(p));
+      return !textOnlyPatterns.some((p) => defaultModel.includes(p));
     } catch {
-      return false;
+      return true;
     }
   }
 
