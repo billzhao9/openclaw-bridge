@@ -242,7 +242,13 @@ ${nameMapping}
 
         // Initialize Message Relay if configured
         if (config.messageRelay) {
-          relayClient = new MessageRelayClient(config.agentId, config.messageRelay, api.logger);
+          relayClient = new MessageRelayClient(config.agentId, config.messageRelay, api.logger, machineId);
+          relayClient.setAgentName(config.agentName);
+          relayClient.setOnConflictRename((newAgentId, newAgentName) => {
+            api.logger.info(`[bridge] Conflict rename: ${entry.agentId} → ${newAgentId}, ${entry.agentName} → ${newAgentName}`);
+            entry.agentId = newAgentId;
+            entry.agentName = newAgentName;
+          });
           try {
             await relayClient.connect();
           } catch (err: any) {
