@@ -122,6 +122,7 @@ export class BridgeHeartbeat {
       } catch {
         // Token decode failed — skip
       }
+      this.entry.discordConnected = !!this.entry.discordId;
 
       const channels = this.extractChannels(this.configPath);
       this.entry.channels = channels;

@@ -36,6 +36,7 @@ export interface RegistryEntry {
   port: number;
   workspacePath: string;
   discordId: string | null;
+  discordConnected?: boolean;
   role: "normal" | "superuser";
   capabilities: string[];
   channels: ChannelInfo[];
