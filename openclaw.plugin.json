@@ -31,6 +31,26 @@
     "fileRelay.apiKey": {
       "label": "FileRelay API Key",
       "sensitive": true
+    },
+    "description": {
+      "label": "Agent Description",
+      "help": "Short description of what this agent does (shown on Hub dashboard)"
+    },
+    "supportsVision": {
+      "label": "Supports Vision",
+      "help": "Whether the agent's model can process images (auto-detected if not set)"
+    },
+    "localManager.enabled": {
+      "label": "Enable Local Manager",
+      "help": "Start PM2 process manager for this machine"
+    },
+    "localManager.hubUrl": {
+      "label": "Hub URL for Local Manager",
+      "placeholder": "http://your-server:3080"
+    },
+    "localManager.managerPass": {
+      "label": "Manager Password",
+      "sensitive": true
     }
   },
   "configSchema": {
@@ -65,7 +85,17 @@
         }
       },
       "heartbeatIntervalMs": { "type": "number" },
-      "offlineThresholdMs": { "type": "number" }
+      "offlineThresholdMs": { "type": "number" },
+      "description": { "type": "string" },
+      "supportsVision": { "type": "boolean" },
+      "localManager": {
+        "type": "object",
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "hubUrl": { "type": "string" },
+          "managerPass": { "type": "string" }
+        }
+      }
     }
   }
 }

@@ -3,6 +3,12 @@ export interface MessageRelayConfig {
   apiKey: string;
 }
 
+export interface LocalManagerConfig {
+  enabled: boolean;
+  hubUrl: string;
+  managerPass: string;
+}
+
 export interface BridgeConfig {
   role: "normal" | "superuser";
   agentId: string;
@@ -19,6 +25,9 @@ export interface BridgeConfig {
   messageRelay?: MessageRelayConfig;
   heartbeatIntervalMs?: number;
   offlineThresholdMs?: number;
+  description?: string;
+  supportsVision?: boolean;
+  localManager?: LocalManagerConfig;
 }
 
 export interface ChannelInfo {
@@ -43,6 +52,9 @@ export interface RegistryEntry {
   registeredAt: string;
   lastHeartbeat: string;
   status: "online" | "offline";
+  memMB?: number;
+  description?: string;
+  supportsVision?: boolean;
 }
 
 export interface DiscoverResult {

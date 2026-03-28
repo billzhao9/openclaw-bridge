@@ -55,6 +55,15 @@ export function parseConfig(raw: unknown): BridgeConfig {
       typeof obj.offlineThresholdMs === "number"
         ? obj.offlineThresholdMs
         : DEFAULTS.offlineThresholdMs,
+    description: typeof obj.description === "string" ? obj.description : undefined,
+    supportsVision: typeof obj.supportsVision === "boolean" ? obj.supportsVision : undefined,
+    localManager: obj.localManager
+      ? {
+          enabled: !!(obj.localManager as Record<string, unknown>).enabled,
+          hubUrl: (obj.localManager as Record<string, unknown>).hubUrl as string,
+          managerPass: (obj.localManager as Record<string, unknown>).managerPass as string,
+        }
+      : undefined,
   };
 }
 
