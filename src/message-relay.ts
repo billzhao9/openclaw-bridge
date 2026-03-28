@@ -12,6 +12,8 @@ export class MessageRelayClient {
   private reconnectDelay = 1000;
   private maxReconnectDelay = 30000;
   private shouldReconnect = true;
+  private authenticated = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingCallbacks = new Map<string, {
     resolve: (msg: any) => void;
     reject: (err: Error) => void;
@@ -25,14 +27,30 @@ export class MessageRelayClient {
   }
 
   async connect(): Promise<void> {
+    // Clean up any existing connection
+    if (this.ws) {
+      try { this.ws.removeAllListeners(); this.ws.close(); } catch {}
+      this.ws = null;
+    }
+    this.authenticated = false;
+
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const settle = (fn: Function, arg?: any) => {
+        if (!settled) { settled = true; fn(arg); }
+      };
+
       try {
         this.ws = new WebSocket(this.config.url);
 
+        // Auth timeout — if no auth_ok within 10s, fail
+        const authTimer = setTimeout(() => {
+          settle(reject, new Error('Auth timeout'));
+          if (this.ws) { try { this.ws.close(); } catch {} }
+        }, 10_000);
+
         this.ws.on('open', () => {
           this.logger.info('Connected to Message Relay Hub');
-          this.reconnectDelay = 1000;
-
           this.ws!.send(JSON.stringify({
             type: 'auth',
             agentId: this.agentId,
@@ -42,38 +60,30 @@ export class MessageRelayClient {
 
         this.ws.on('message', (data) => {
           let msg: any;
-          try {
-            msg = JSON.parse(data.toString());
-          } catch {
-            return;
-          }
+          try { msg = JSON.parse(data.toString()); } catch { return; }
 
           if (msg.type === 'auth_ok') {
+            clearTimeout(authTimer);
+            this.authenticated = true;
+            this.reconnectDelay = 1000; // Reset on success
             this.logger.info('Authenticated with Message Relay Hub');
-            resolve();
+            settle(resolve);
             return;
           }
 
           if (msg.type === 'auth_error') {
+            clearTimeout(authTimer);
             this.logger.error(`Auth failed: ${msg.reason}`);
-            reject(new Error(msg.reason));
+            settle(reject, new Error(msg.reason));
             return;
           }
 
-          // Check for pending request callbacks
-          if (msg.replyTo && this.pendingCallbacks.has(msg.replyTo)) {
-            const cb = this.pendingCallbacks.get(msg.replyTo)!;
+          // Check for pending request callbacks (replyTo or sessionId)
+          const callbackKey = msg.replyTo || msg.sessionId;
+          if (callbackKey && this.pendingCallbacks.has(callbackKey)) {
+            const cb = this.pendingCallbacks.get(callbackKey)!;
             clearTimeout(cb.timer);
-            this.pendingCallbacks.delete(msg.replyTo);
-            cb.resolve(msg);
-            return;
-          }
-
-          // Also check sessionId for handoff ack
-          if (msg.sessionId && this.pendingCallbacks.has(msg.sessionId)) {
-            const cb = this.pendingCallbacks.get(msg.sessionId)!;
-            clearTimeout(cb.timer);
-            this.pendingCallbacks.delete(msg.sessionId);
+            this.pendingCallbacks.delete(callbackKey);
             cb.resolve(msg);
             return;
           }
@@ -81,12 +91,17 @@ export class MessageRelayClient {
           // Dispatch to type-based handlers
           const handlers = this.handlers.get(msg.type) || [];
           for (const handler of handlers) {
-            handler(msg);
+            try { handler(msg); } catch (e: any) {
+              this.logger.error(`Handler error for ${msg.type}: ${e.message}`);
+            }
           }
         });
 
-        this.ws.on('close', () => {
-          this.logger.info('Disconnected from Message Relay Hub');
+        this.ws.on('close', (code) => {
+          clearTimeout(authTimer);
+          this.authenticated = false;
+          this.logger.info(`Disconnected from Hub (code: ${code})`);
+          settle(reject, new Error('Connection closed'));
           if (this.shouldReconnect) {
             this.scheduleReconnect();
           }
@@ -94,19 +109,27 @@ export class MessageRelayClient {
 
         this.ws.on('error', (err) => {
           this.logger.error(`WebSocket error: ${err.message}`);
+          // Don't settle here — let 'close' event handle it
         });
       } catch (err: any) {
-        reject(err);
+        settle(reject, err);
       }
     });
   }
 
   private scheduleReconnect(): void {
+    // Prevent multiple reconnect timers
+    if (this.reconnectTimer) return;
     this.logger.info(`Reconnecting in ${this.reconnectDelay}ms...`);
-    setTimeout(() => {
-      this.connect().catch(() => {
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
+      try {
+        await this.connect();
+        this.logger.info('Reconnected to Message Relay Hub');
+      } catch {
         this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
-      });
+        // connect() failure triggers 'close' which calls scheduleReconnect again
+      }
     }, this.reconnectDelay);
   }
 
@@ -117,7 +140,7 @@ export class MessageRelayClient {
   }
 
   send(msg: any): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.authenticated) {
       this.ws.send(JSON.stringify(msg));
     }
   }
@@ -137,6 +160,10 @@ export class MessageRelayClient {
 
   async disconnect(): Promise<void> {
     this.shouldReconnect = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     for (const [id, cb] of this.pendingCallbacks.entries()) {
       clearTimeout(cb.timer);
       cb.reject(new Error('Disconnecting'));
@@ -144,12 +171,14 @@ export class MessageRelayClient {
     this.pendingCallbacks.clear();
 
     if (this.ws) {
+      this.ws.removeAllListeners();
       this.ws.close(1000, 'plugin deactivated');
       this.ws = null;
     }
+    this.authenticated = false;
   }
 
   get isConnected(): boolean {
-    return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+    return this.ws !== null && this.ws.readyState === WebSocket.OPEN && this.authenticated;
   }
 }
