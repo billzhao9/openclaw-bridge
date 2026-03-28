@@ -769,18 +769,25 @@ async function cmdUpgrade(): Promise<void> {
   // 1. Try installing/upgrading as OpenClaw plugin
   console.log("Checking OpenClaw plugin installation...");
   try {
-    // First attempt: just try to install
-    const installResult = run("openclaw plugins install openclaw-bridge 2>&1", { silent: true });
-    if (installResult.includes("openclaw-bridge")) {
+    // Use execSync directly to capture both stdout and error output
+    let installOutput = "";
+    let installFailed = false;
+    try {
+      installOutput = execSync("openclaw plugins install openclaw-bridge 2>&1", {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+    } catch (execErr: any) {
+      installOutput = String(execErr?.stdout || "") + String(execErr?.stderr || "") + String(execErr?.message || "");
+      installFailed = true;
+    }
+
+    if (!installFailed && installOutput) {
       updatedPlugin = true;
       console.log("  Plugin installed/updated.");
-    }
-  } catch (installErr: any) {
-    const errMsg = String(installErr?.stdout || installErr?.message || installErr || "");
-
-    if (errMsg.includes("plugin already exists") || errMsg.includes("already exists")) {
+    } else if (installOutput.includes("already exists")) {
       // Parse the existing path from error: "plugin already exists: /path/to/openclaw-bridge (delete it first)"
-      const pathMatch = errMsg.match(/already exists:\s*(.+?)\s*\(/);
+      const pathMatch = installOutput.match(/already exists:\s*(.+?)\s*\(/);
       const existingPath = pathMatch?.[1]?.trim();
 
       if (existingPath && existsSync(existingPath)) {
@@ -809,12 +816,15 @@ async function cmdUpgrade(): Promise<void> {
         updatedPlugin = true;
         console.log("  Plugin updated.");
       } catch {
-        console.log("  Plugin install failed after removing old version. Try manually:");
+        console.log("  Plugin install failed. Try manually:");
         console.log("    openclaw plugins install openclaw-bridge");
       }
     } else {
-      console.log("  openclaw CLI not found or plugins command failed. Skipping plugin check.");
+      // Install failed for unknown reason — show the output for debugging
+      console.log(`  Plugin install failed: ${installOutput.slice(0, 200)}`);
     }
+  } catch {
+    console.log("  openclaw CLI not found. Skipping plugin check.");
   }
 
   // 2. Check if installed as global npm package
