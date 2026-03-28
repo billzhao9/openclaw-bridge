@@ -114,6 +114,39 @@ User ←→ Discord DM ←→ Main Gateway
 - [openclaw-bridge-hub](https://www.npmjs.com/package/openclaw-bridge-hub) v0.2.4+ running on a reachable server
 - OpenClaw gateway 2026.3.24+
 
+---
+
+## 中文说明
+
+openclaw-bridge 是 [OpenClaw](https://github.com/nicepkg/openclaw) 的跨网关通信插件，让独立运行的 Agent 网关之间能够互相发现、传输文件、实时传话和无缝切换对话。
+
+### 核心功能
+
+- **Agent 发现** — 通过心跳自动注册和发现在线 Agent
+- **文件传输** — Agent 之间发送文件（同机直传，跨机走 Hub 中转）
+- **消息中继** — 通过 Hub 向任意 Agent 发消息并等待回复（传话模式）
+- **会话交接** — 将对话无缝切换给其他 Agent（Handoff 模式）
+- **超级用户工具** — 读写远程 Agent 文件、重启远程网关
+- **自动配置** — 首次启动时自动补全推荐配置项
+
+### 快速开始
+
+1. 先在服务器部署 [openclaw-bridge-hub](https://www.npmjs.com/package/openclaw-bridge-hub)
+2. 安装本插件：`openclaw plugins install openclaw-bridge`
+3. 在 `openclaw.json` 中配置 Hub 地址和 API Key
+4. 启动网关，插件会自动注册和连接
+
+### 使用场景
+
+- 用户在 DM 中让 Main Bot 传话给 PM Bot
+- 用户要求切换到其他 Bot 继续对话，无需换频道
+- 跨机器部署的 Agent 之间互相通信
+- Superuser 远程管理其他 Agent 的文件和生命周期
+
+## Author
+
+**Bill Zhao** — [LinkedIn](https://www.linkedin.com/in/billzhaodi/)
+
 ## License
 
 MIT
