@@ -584,22 +584,23 @@ async function cmdAddAgent(): Promise<void> {
 
   // Create run.sh
   const runSh = `#!/usr/bin/env bash
-set -e
+cd "$(dirname "$0")"
+export OPENCLAW_HOME="$(pwd)/home"
+export OPENCLAW_STATE_DIR="$(pwd)/state"
+export OPENCLAW_CONFIG_PATH="$(pwd)/openclaw.json"
+export NODE_OPTIONS="--max-old-space-size=256"
+export OPENCLAW_PROFILE="${agentId}"
+export OPENCLAW_GATEWAY_PORT="${nextPort}"
 
-PORT=${nextPort}
-AGENT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
-# Kill any process using our port (orphan cleanup)
-if command -v lsof >/dev/null 2>&1; then
-  lsof -ti tcp:$PORT | xargs kill -9 2>/dev/null || true
-elif command -v fuser >/dev/null 2>&1; then
-  fuser -k $PORT/tcp 2>/dev/null || true
+# Kill any orphan process on our port before starting
+if [[ "$OSTYPE" == "darwin"* ]] || [[ "$OSTYPE" == "linux"* ]]; then
+  lsof -ti:$OPENCLAW_GATEWAY_PORT | xargs kill -9 2>/dev/null && sleep 1
+elif command -v netstat &>/dev/null; then
+  orphan=$(netstat -ano 2>/dev/null | grep ":$OPENCLAW_GATEWAY_PORT.*LISTEN" | awk '{print $5}' | head -1)
+  [ -n "$orphan" ] && taskkill //F //PID $orphan 2>/dev/null && sleep 1
 fi
 
-export OPENCLAW_GATEWAY_PORT=$PORT
-export OPENCLAW_CONFIG_PATH="$AGENT_DIR/openclaw.json"
-
-exec openclaw start
+exec openclaw gateway --port ${nextPort}
 `;
 
   // Create run.ps1
@@ -624,37 +625,25 @@ $env:OPENCLAW_CONFIG_PATH = "$AgentDir\\openclaw.json"
 openclaw start
 `;
 
-  // Create ecosystem entry
-  const ecosystemEntry = `    {
-      name: "gw-${agentId}",
-      script: "${IS_WINDOWS ? agentDir.replace(/\\/g, "\\\\") + "\\\\run.ps1" : agentDir + "/run.sh"}",
-      ${IS_WINDOWS ? 'interpreter: "powershell",' : ''}
-      env: {
-        OPENCLAW_GATEWAY_PORT: "${nextPort}",
-        OPENCLAW_CONFIG_PATH: "${IS_WINDOWS ? agentDir.replace(/\\/g, "\\\\") + "\\\\openclaw.json" : agentDir + "/openclaw.json"}",
-      },
-      max_memory_restart: "512M",
-      log_date_format: "YYYY-MM-DD HH:mm:ss",
-    },`;
-
   // Write files
   mkdirSync(agentDir, { recursive: true });
   writeFileSync(join(agentDir, "openclaw.json"), JSON.stringify(openclawJson, null, 2), "utf-8");
   writeFileSync(join(agentDir, "run.sh"), runSh, { encoding: "utf-8", mode: 0o755 });
   writeFileSync(join(agentDir, "run.ps1"), runPs1, "utf-8");
 
-  // Update ecosystem.config.cjs — insert before the closing ]; of apps array
+  // Update ecosystem.config.cjs — add to instances array
   let ecosystemContent = readFileSync(ecosystem, "utf-8");
-  // Find the last ]; in the apps array context
-  const insertMarker = /(\n\s*\]\s*;?\s*\n?}\s*;?\s*$)/;
-  if (insertMarker.test(ecosystemContent)) {
+  const newEntry = `  { name: 'gw-${agentId}', dir: '${agentId}', port: '${nextPort}', profile: '${agentId}' },`;
+  // Insert before the closing ]; of the instances array
+  const instancesArrayEnd = /(\n\];)/;
+  if (instancesArrayEnd.test(ecosystemContent)) {
     ecosystemContent = ecosystemContent.replace(
-      insertMarker,
-      `\n${ecosystemEntry}$1`
+      instancesArrayEnd,
+      `\n${newEntry}$1`
     );
   } else {
-    // Fallback: append a comment so the user knows to add it manually
-    ecosystemContent += `\n// Add to apps array:\n// ${ecosystemEntry}\n`;
+    console.log(`\n  ⚠️  Could not auto-update ecosystem.config.cjs. Add manually:`);
+    console.log(`  ${newEntry}`);
   }
   writeFileSync(ecosystem, ecosystemContent, "utf-8");
 
