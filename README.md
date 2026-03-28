@@ -175,6 +175,77 @@ User ←→ Discord DM ←→ Main Gateway
 - Messages and handoffs route through Hub WebSocket (`/ws`)
 - File transfers use local filesystem (same machine) or Hub relay (cross-machine)
 
+## CLI Commands
+
+After installing globally (`npm install -g openclaw-bridge`), the `openclaw-bridge` command is available:
+
+| Command | Description |
+|---------|-------------|
+| `setup` | Interactive setup — configure Hub URL, API key, and manager password |
+| `status` | Show PM2 process status and Hub connection |
+| `start` | Find and start all openclaw instances via PM2 ecosystem |
+| `stop` | Stop all openclaw instances |
+| `restart [agent]` | Restart a specific agent or all |
+| `logs [agent]` | View PM2 logs for an agent (last 100 lines) |
+| `backup` | Create encrypted backup of openclaw-instances |
+| `clean-sessions` | Remove old/deleted session files to free disk space |
+| `add-agent` | Wizard to create a new agent instance |
+| `doctor` | Diagnose environment issues (PM2, Node, ports, Hub) |
+
+### Quick Start
+
+1. Install the plugin: `npm install -g openclaw-bridge`
+2. Run setup: `openclaw-bridge setup`
+3. Check environment: `openclaw-bridge doctor`
+4. Start all agents: `openclaw-bridge start`
+5. Check status: `openclaw-bridge status`
+
+### Adding a New Agent
+
+```bash
+openclaw-bridge add-agent
+```
+
+The wizard will prompt for:
+- Agent name and ID
+- Description
+- AI model selection
+- Automatically assigns the next available port
+- Creates directory, config files, and updates PM2 ecosystem
+
+### Backup & Restore
+
+```bash
+openclaw-bridge backup
+```
+
+Creates an encrypted backup archive. Config files are encrypted with AES-256-CBC. Excludes node_modules, state, workspace, and logs.
+
+## CLI 命令说明
+
+安装后 (`npm install -g openclaw-bridge`)，可使用 `openclaw-bridge` 命令：
+
+| 命令 | 说明 |
+|------|------|
+| `setup` | 交互式设置 — 配置 Hub 地址、API 密钥和管理密码 |
+| `status` | 查看 PM2 进程状态和 Hub 连接情况 |
+| `start` | 查找并启动所有 openclaw 实例 |
+| `stop` | 停止所有实例 |
+| `restart [agent]` | 重启指定或全部 agent |
+| `logs [agent]` | 查看 agent 日志（最近100行） |
+| `backup` | 创建加密备份 |
+| `clean-sessions` | 清理旧会话文件释放磁盘空间 |
+| `add-agent` | 向导式创建新 agent 实例 |
+| `doctor` | 环境诊断（PM2、Node、端口、Hub 连接） |
+
+### 快速开始
+
+1. 安装插件：`npm install -g openclaw-bridge`
+2. 运行设置：`openclaw-bridge setup`
+3. 检查环境：`openclaw-bridge doctor`
+4. 启动所有 agent：`openclaw-bridge start`
+5. 查看状态：`openclaw-bridge status`
+
 ## Mac Compatibility
 
 The same plugin code runs on both **Windows** and **macOS** without modification. The Local Manager and orphan process cleanup routines use cross-platform detection — on Windows they use `taskkill`, on macOS/Linux they use `kill` signals. PM2 itself is cross-platform, so the full feature set (start/stop/restart, log streaming, process metrics) works identically on both platforms.
