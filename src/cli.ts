@@ -766,36 +766,55 @@ async function cmdUpgrade(): Promise<void> {
   let updatedPlugin = false;
   let updatedCli = false;
 
-  // 1. Check if installed as OpenClaw plugin
+  // 1. Try installing/upgrading as OpenClaw plugin
   console.log("Checking OpenClaw plugin installation...");
   try {
-    const pluginList = run("openclaw plugins list", { silent: true });
-    if (pluginList.includes("openclaw-bridge")) {
-      console.log("  Found openclaw-bridge plugin. Removing old version...");
-      try {
-        run("openclaw plugins uninstall openclaw-bridge", { silent: true });
-      } catch {
-        // If uninstall command doesn't exist, try to find and delete the directory
-        const extensionsDirs = [
+    // First attempt: just try to install
+    const installResult = run("openclaw plugins install openclaw-bridge 2>&1", { silent: true });
+    if (installResult.includes("openclaw-bridge")) {
+      updatedPlugin = true;
+      console.log("  Plugin installed/updated.");
+    }
+  } catch (installErr: any) {
+    const errMsg = String(installErr?.stdout || installErr?.message || installErr || "");
+
+    if (errMsg.includes("plugin already exists") || errMsg.includes("already exists")) {
+      // Parse the existing path from error: "plugin already exists: /path/to/openclaw-bridge (delete it first)"
+      const pathMatch = errMsg.match(/already exists:\s*(.+?)\s*\(/);
+      const existingPath = pathMatch?.[1]?.trim();
+
+      if (existingPath && existsSync(existingPath)) {
+        console.log(`  Old plugin found at ${existingPath}. Removing...`);
+        run(IS_WINDOWS ? `rmdir /s /q "${existingPath}"` : `rm -rf "${existingPath}"`, { silent: true });
+      } else {
+        // Fallback: search common plugin directories
+        const candidates = [
           join(homedir(), ".openclaw", "extensions", "openclaw-bridge"),
           join(homedir(), "openclaw-extensions", "openclaw-bridge"),
-        ];
-        for (const dir of extensionsDirs) {
+          IS_WINDOWS ? "C:\\openclaw-extensions\\openclaw-bridge" : "",
+        ].filter(Boolean);
+        for (const dir of candidates) {
           if (existsSync(dir)) {
-            console.log(`  Removing ${dir}...`);
-            run(`rm -rf "${dir}"`, { silent: true });
+            console.log(`  Old plugin found at ${dir}. Removing...`);
+            run(IS_WINDOWS ? `rmdir /s /q "${dir}"` : `rm -rf "${dir}"`, { silent: true });
+            break;
           }
         }
       }
+
+      // Retry install after removing old version
       console.log("  Installing new version...");
-      runInherit("openclaw plugins install openclaw-bridge");
-      updatedPlugin = true;
-      console.log("  Plugin updated.");
+      try {
+        runInherit("openclaw plugins install openclaw-bridge");
+        updatedPlugin = true;
+        console.log("  Plugin updated.");
+      } catch {
+        console.log("  Plugin install failed after removing old version. Try manually:");
+        console.log("    openclaw plugins install openclaw-bridge");
+      }
     } else {
-      console.log("  Not installed as OpenClaw plugin.");
+      console.log("  openclaw CLI not found or plugins command failed. Skipping plugin check.");
     }
-  } catch {
-    console.log("  openclaw CLI not found or plugins command failed. Skipping plugin check.");
   }
 
   // 2. Check if installed as global npm package
