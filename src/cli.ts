@@ -848,7 +848,92 @@ async function cmdUpgrade(): Promise<void> {
       console.log("\nUpgrade complete.");
     }
   }
+
+  // 4. Config health check — scan openclaw.json and fix missing settings
+  console.log("\nChecking bridge configuration...");
+  const configFixCount = checkAndFixBridgeConfig();
+  if (configFixCount === 0) {
+    console.log("  Config OK — all required settings present.");
+  } else {
+    console.log(`  Fixed ${configFixCount} config issue(s). Restart your gateway to apply.`);
+  }
+
   console.log();
+}
+
+/** Scan openclaw.json for missing bridge config fields and auto-fix them */
+function checkAndFixBridgeConfig(): number {
+  // Find openclaw.json — check env var, then common locations
+  const candidates = [
+    process.env.OPENCLAW_CONFIG_PATH,
+    join(process.cwd(), "openclaw.json"),
+    join(homedir(), ".openclaw", "openclaw.json"),
+    IS_WINDOWS ? "C:\\openclaw-instances\\main\\openclaw.json" : "",
+  ].filter(Boolean) as string[];
+
+  let fixes = 0;
+
+  for (const configPath of candidates) {
+    if (!existsSync(configPath)) continue;
+
+    try {
+      const raw = readFileSync(configPath, "utf-8");
+      const config = JSON.parse(raw);
+      const bridgeConfig = config.plugins?.entries?.["openclaw-bridge"]?.config;
+      if (!bridgeConfig) continue;
+
+      let changed = false;
+
+      // Fix 1: Auto-add messageRelay from fileRelay
+      if (!bridgeConfig.messageRelay && bridgeConfig.fileRelay?.baseUrl) {
+        const baseUrl = bridgeConfig.fileRelay.baseUrl as string;
+        const wsUrl = baseUrl.replace(/^http/, "ws") + "/ws";
+        bridgeConfig.messageRelay = {
+          url: wsUrl,
+          apiKey: bridgeConfig.fileRelay.apiKey || "",
+        };
+        console.log(`  [${configPath}] Added messageRelay.url = ${wsUrl}`);
+        changed = true;
+        fixes++;
+      }
+
+      // Fix 2: Ensure chatCompletions is enabled (needed for message relay)
+      if (!config.gateway?.http?.endpoints?.chatCompletions?.enabled) {
+        config.gateway = config.gateway || {};
+        config.gateway.http = config.gateway.http || {};
+        config.gateway.http.endpoints = config.gateway.http.endpoints || {};
+        config.gateway.http.endpoints.chatCompletions = { enabled: true };
+        console.log(`  [${configPath}] Enabled gateway.http.endpoints.chatCompletions`);
+        changed = true;
+        fixes++;
+      }
+
+      // Fix 3: Check required fields
+      const required = ["role", "agentId", "agentName"];
+      for (const field of required) {
+        if (!bridgeConfig[field]) {
+          console.log(`  [${configPath}] WARNING: missing required field "${field}" in bridge config`);
+        }
+      }
+
+      // Fix 4: Check fileRelay and registry baseUrls aren't pointing to localhost in remote setup
+      if (bridgeConfig.registry?.baseUrl && bridgeConfig.fileRelay?.baseUrl) {
+        const regUrl = bridgeConfig.registry.baseUrl as string;
+        const relayUrl = bridgeConfig.fileRelay.baseUrl as string;
+        if (regUrl.includes("localhost") !== relayUrl.includes("localhost")) {
+          console.log(`  [${configPath}] WARNING: registry and fileRelay point to different hosts (${regUrl} vs ${relayUrl})`);
+        }
+      }
+
+      if (changed) {
+        writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+      }
+    } catch (err: any) {
+      console.log(`  [${configPath}] Could not parse: ${err.message}`);
+    }
+  }
+
+  return fixes;
 }
 
 // ── Usage ─────────────────────────────────────────────────────────────────────
