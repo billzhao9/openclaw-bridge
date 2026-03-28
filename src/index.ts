@@ -136,6 +136,8 @@ const bridgePlugin = {
       registeredAt: new Date().toISOString(),
       lastHeartbeat: new Date().toISOString(),
       status: "online",
+      description: config.description,
+      supportsVision: config.supportsVision,
     };
 
     const heartbeat = new BridgeHeartbeat(config, registry, fileOps, entry, api.logger);

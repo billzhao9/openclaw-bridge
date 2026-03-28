@@ -73,6 +73,8 @@ export class BridgeHeartbeat {
     await this.detectConfigChanges();
 
     this.entry.lastHeartbeat = new Date().toISOString();
+    this.entry.memMB = Math.round(process.memoryUsage().rss / 1024 / 1024);
+    this.entry.supportsVision = this.detectVisionSupport();
 
     const currentHash = this.computeEntryHash();
     if (currentHash !== this.lastConfigHash) {
@@ -85,6 +87,30 @@ export class BridgeHeartbeat {
 
     await this.fileOps.processPendingFiles();
     await this.fileOps.processPendingCommands();
+  }
+
+  private detectVisionSupport(): boolean {
+    if (this.config.supportsVision !== undefined) {
+      return this.config.supportsVision;
+    }
+    if (!this.configPath) return false;
+    try {
+      const raw = readFileSync(this.configPath, "utf-8");
+      const config = JSON.parse(raw) as {
+        models?: {
+          default?: string;
+          list?: Array<{ id?: string; name?: string }>;
+        };
+      };
+      const defaultModel = config.models?.default ?? "";
+      const visionPatterns = [
+        "gpt-4o", "gpt-4-vision", "claude-3", "claude-sonnet", "claude-opus",
+        "gemini", "gemini-pro", "gemini-2", "pixtral", "llava",
+      ];
+      return visionPatterns.some((p) => defaultModel.toLowerCase().includes(p));
+    } catch {
+      return false;
+    }
   }
 
   private async detectConfigChanges(): Promise<void> {
