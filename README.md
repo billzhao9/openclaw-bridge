@@ -61,6 +61,72 @@ Add to `openclaw.json` under `plugins.entries` (replace the API key and server U
 }
 ```
 
+### New Config Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `description` | string | Short description shown on the Hub dashboard agent card |
+| `supportsVision` | boolean | Whether this agent accepts image inputs. Auto-detected from the gateway model config if not set. |
+| `localManager` | object | Local Manager settings — see [Local Manager](#local-manager) section below |
+
+Example with all new fields:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "openclaw-bridge": {
+        "config": {
+          "role": "normal",
+          "agentId": "my-agent",
+          "agentName": "My Agent",
+          "description": "Handles project management tasks and sprint planning",
+          "supportsVision": false,
+          "registry": {
+            "baseUrl": "http://your-server:3080",
+            "apiKey": "your-hub-api-key"
+          },
+          "fileRelay": {
+            "baseUrl": "http://your-server:3080",
+            "apiKey": "your-hub-api-key"
+          },
+          "localManager": {
+            "enabled": true,
+            "hubUrl": "http://your-server:3080",
+            "managerPass": "your-manager-password"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+### Local Manager
+
+Installing `openclaw-bridge` now bundles a **Local Manager** that handles PM2 process management for your gateway instances on your local machine. It connects to the Hub via WebSocket so the Hub dashboard can remotely start, stop, and restart individual gateways.
+
+**Requirements:**
+
+- PM2 installed globally: `npm install -g pm2`
+- A running `openclaw-bridge-hub` server
+
+**How it works:**
+
+- On startup, the plugin checks if `localManager.enabled` is `true`
+- Only one Local Manager process runs per machine (enforced via a lock file)
+- It connects to Hub at `localManager.hubUrl` over `/ws/manager` and authenticates with `localManager.managerPass`
+- The Hub dashboard can then send `start`, `stop`, and `restart` commands for any gateway on that machine
+- PM2 reports process status (running state, memory, uptime) back to the Hub every heartbeat cycle
+
+**Config fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `localManager.enabled` | boolean | `false` | Enable Local Manager on this machine |
+| `localManager.hubUrl` | string | (required) | Full URL of the Hub server, e.g. `http://your-server:3080` |
+| `localManager.managerPass` | string | (required) | Password set via `openclaw-bridge-hub manager-pass` |
+
 ### Auto-configured settings
 
 On first startup, the plugin automatically adds these if missing:
@@ -108,6 +174,10 @@ User ←→ Discord DM ←→ Main Gateway
 - Plugin auto-registers to Hub, heartbeats every 30 seconds
 - Messages and handoffs route through Hub WebSocket (`/ws`)
 - File transfers use local filesystem (same machine) or Hub relay (cross-machine)
+
+## Mac Compatibility
+
+The same plugin code runs on both **Windows** and **macOS** without modification. The Local Manager and orphan process cleanup routines use cross-platform detection — on Windows they use `taskkill`, on macOS/Linux they use `kill` signals. PM2 itself is cross-platform, so the full feature set (start/stop/restart, log streaming, process metrics) works identically on both platforms.
 
 ## Requirements
 

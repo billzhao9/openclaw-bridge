@@ -1,0 +1,6 @@
+docs/
+.superpowers/
+_inbox/
+output/
+.claude/
+*.log
