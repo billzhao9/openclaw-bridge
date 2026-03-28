@@ -9,6 +9,7 @@ import { assertPermission } from "./permissions.js";
 import { discoverAll, whois } from "./discovery.js";
 import { MessageRelayClient } from "./message-relay.js";
 import * as proxySession from "./session.js";
+import { LocalManager } from "./manager/local-manager.js";
 import type { OpenClawPluginApi, RegistryEntry } from "./types.js";
 
 function resolveWorkspacePath(agentId: string): string {
@@ -142,6 +143,15 @@ const bridgePlugin = {
 
     const heartbeat = new BridgeHeartbeat(config, registry, fileOps, entry, api.logger);
 
+    let localManager: LocalManager | null = null;
+    if (config.localManager?.enabled) {
+      localManager = new LocalManager(
+        config.localManager,
+        config.fileRelay?.apiKey ?? "",
+        api.logger,
+      );
+    }
+
     // Cache for context injection (refreshed every heartbeat)
     let cachedAgentList = "";
     let lastDiscoverTime = 0;
@@ -225,6 +235,9 @@ ${nameMapping}
       id: "openclaw-bridge",
       async start() {
         await heartbeat.start();
+        if (localManager) {
+          await localManager.start();
+        }
         await refreshAgentContext();
 
         // Initialize Message Relay if configured
@@ -368,6 +381,9 @@ ${nameMapping}
         api.logger.info(`openclaw-bridge: initialized (${config.agentId}, role=${config.role})`);
       },
       async stop() {
+        if (localManager) {
+          await localManager.stop();
+        }
         if (relayClient) {
           await relayClient.disconnect();
         }
