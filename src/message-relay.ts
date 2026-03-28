@@ -19,11 +19,27 @@ export class MessageRelayClient {
     reject: (err: Error) => void;
     timer: ReturnType<typeof setTimeout>;
   }>();
+  private machineId: string;
+  private originalAgentId: string;
+  private originalAgentName: string = '';
+  private conflictRetries = 0;
+  private maxConflictRetries = 5;
+  private onConflictRename: ((newAgentId: string, newAgentName: string) => void) | null = null;
 
-  constructor(agentId: string, config: MessageRelayConfig, logger: PluginLogger) {
+  constructor(agentId: string, config: MessageRelayConfig, logger: PluginLogger, machineId: string) {
     this.agentId = agentId;
+    this.originalAgentId = agentId;
     this.config = config;
     this.logger = logger;
+    this.machineId = machineId;
+  }
+
+  setAgentName(name: string): void {
+    if (!this.originalAgentName) this.originalAgentName = name;
+  }
+
+  setOnConflictRename(cb: (newAgentId: string, newAgentName: string) => void): void {
+    this.onConflictRename = cb;
   }
 
   async connect(): Promise<void> {
@@ -55,6 +71,7 @@ export class MessageRelayClient {
             type: 'auth',
             agentId: this.agentId,
             apiKey: this.config.apiKey,
+            machineId: this.machineId,
           }));
         });
 
@@ -75,6 +92,41 @@ export class MessageRelayClient {
             clearTimeout(authTimer);
             this.logger.error(`Auth failed: ${msg.reason}`);
             settle(reject, new Error(msg.reason));
+            return;
+          }
+
+          if (msg.type === 'auth_conflict') {
+            clearTimeout(authTimer);
+            this.conflictRetries++;
+            if (this.conflictRetries > this.maxConflictRetries) {
+              this.logger.error(`agentId conflict: max retries (${this.maxConflictRetries}) exhausted, giving up`);
+              this.shouldReconnect = false;
+              settle(reject, new Error('agentId conflict: max retries exhausted'));
+              return;
+            }
+
+            let newAgentId: string;
+            if (this.conflictRetries === 1) {
+              newAgentId = msg.suggestedId;
+            } else {
+              const base = `${this.originalAgentId}@${this.machineId}`;
+              newAgentId = `${base}-${this.conflictRetries - 1}`;
+            }
+
+            const newAgentName = this.originalAgentName
+              ? `${this.originalAgentName} (${this.machineId})`
+              : newAgentId;
+
+            this.logger.info(`agentId "${this.agentId}" conflicts with machine "${msg.existingMachine}", renaming to "${newAgentId}"`);
+            this.agentId = newAgentId;
+
+            if (this.onConflictRename) {
+              this.onConflictRename(newAgentId, newAgentName);
+            }
+
+            settle(reject, new Error('auth_conflict - reconnecting with new name'));
+            if (this.ws) { try { this.ws.close(); } catch {} }
+            this.reconnectDelay = 100;
             return;
           }
 
