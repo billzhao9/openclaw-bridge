@@ -9,26 +9,47 @@ The all-in-one client plugin for [OpenClaw](https://github.com/nicepkg/openclaw)
 - **CLI Tools** — Setup, status, start/stop/restart, log viewing, backup, agent creation, diagnostics
 - **Auto-Config** — Automatically patches missing settings on first run
 
-## Quick Start
+## Installation
+
+### As OpenClaw Plugin (cross-gateway communication)
 
 ```bash
-# 1. Install globally
+openclaw plugins install openclaw-bridge
+```
+
+Then configure in your `openclaw.json` — see [Plugin Configuration](#plugin-configuration) below.
+
+### As CLI Tool (PM2 process management, optional)
+
+```bash
 npm install -g openclaw-bridge
-
-# 2. Interactive setup (Hub URL, API key, manager password)
 openclaw-bridge setup
-
-# 3. Check your environment
 openclaw-bridge doctor
+```
 
-# 4. Start all gateway instances
-openclaw-bridge start
+### Both (recommended)
 
-# 5. Verify everything is running
-openclaw-bridge status
+The plugin provides bridge tools (discover, send_file, handoff, etc.) inside OpenClaw conversations. The CLI provides ops management (start/stop/restart agents, backup, diagnostics). They are independent and do not conflict.
+
+### Upgrading
+
+```bash
+openclaw-bridge upgrade    # updates both plugin and CLI automatically
 ```
 
 **Prerequisites:** [openclaw-bridge-hub](https://www.npmjs.com/package/openclaw-bridge-hub) running on a server, PM2 installed globally (`npm install -g pm2`), Node.js 18+.
+
+## What's New in v0.4.0
+
+### Multi-Device Support
+- **Automatic agentId Conflict Resolution** — If two machines use the same `agentId`, the second machine automatically renames to `agentId@hostname` (e.g., `main@MacBookPro`). No manual config change needed.
+- **Proper Plugin Packaging** — Now ships compiled JavaScript. Installs correctly via `openclaw plugins install`.
+- **Upgrade Command** — Run `openclaw-bridge upgrade` to update both plugin and CLI in one step.
+
+### 多设备支持 (v0.4.0)
+- **agentId 冲突自动解决** — 两台机器用相同 agentId 时，第二台自动改名为 `agentId@主机名`（如 `main@MacBookPro`），无需手动改配置。
+- **规范打包** — 现在发布编译后的 JavaScript，通过 `openclaw plugins install` 正确安装。
+- **一键升级** — 运行 `openclaw-bridge upgrade` 同时更新插件和 CLI。
 
 ## CLI Commands
 
@@ -44,6 +65,7 @@ openclaw-bridge status
 | `clean-sessions` | Remove old/deleted session files to free disk space |
 | `add-agent` | Wizard to create a new agent instance |
 | `doctor` | Diagnose environment issues (PM2, Node, ports, Hub) |
+| `upgrade` | Upgrade openclaw-bridge (plugin + CLI) |
 
 ### Adding a New Agent
 
@@ -194,14 +216,18 @@ openclaw-bridge 是 [OpenClaw](https://github.com/nicepkg/openclaw) 的一站式
 - **CLI 工具** — 设置、状态查看、启停重启、日志、备份、创建 Agent、环境诊断
 - **自动配置** — 首次启动自动补全推荐配置
 
-### 快速开始
+### 安装
 
 ```bash
-npm install -g openclaw-bridge    # 安装
-openclaw-bridge setup             # 配置 Hub 连接
-openclaw-bridge doctor            # 检查环境
-openclaw-bridge start             # 启动所有实例
-openclaw-bridge status            # 查看状态
+# 作为 OpenClaw 插件安装（跨网关通信）
+openclaw plugins install openclaw-bridge
+
+# 作为 CLI 工具安装（可选，用于 PM2 进程管理）
+npm install -g openclaw-bridge
+openclaw-bridge setup
+
+# 一键升级
+openclaw-bridge upgrade
 ```
 
 ### CLI 命令
@@ -218,6 +244,7 @@ openclaw-bridge status            # 查看状态
 | `clean-sessions` | 清理旧会话文件 |
 | `add-agent` | 向导式创建新 agent |
 | `doctor` | 环境诊断 |
+| `upgrade` | 一键升级 openclaw-bridge（插件 + CLI） |
 
 ### 使用场景
 
