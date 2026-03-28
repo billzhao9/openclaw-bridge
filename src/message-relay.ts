@@ -1,5 +1,15 @@
 import WebSocket from 'ws';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { PluginLogger, MessageRelayConfig } from './types.js';
+
+// Read version from package.json at module load time
+let BRIDGE_VERSION = 'unknown';
+try {
+  const pkgPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
+  BRIDGE_VERSION = JSON.parse(readFileSync(pkgPath, 'utf-8')).version;
+} catch {}
 
 type MessageHandler = (msg: any) => void;
 
@@ -72,6 +82,7 @@ export class MessageRelayClient {
             agentId: this.agentId,
             apiKey: this.config.apiKey,
             machineId: this.machineId,
+            bridgeVersion: BRIDGE_VERSION,
           }));
         });
 
