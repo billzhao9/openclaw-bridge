@@ -47,11 +47,11 @@ Add to `openclaw.json` under `plugins.entries` (replace the API key and server U
           "agentId": "my-agent",
           "agentName": "My Agent",
           "registry": {
-            "baseUrl": "http://69.5.7.190:3080",
+            "baseUrl": "http://your-server:3080",
             "apiKey": "your-hub-api-key"
           },
           "fileRelay": {
-            "baseUrl": "http://69.5.7.190:3080",
+            "baseUrl": "http://your-server:3080",
             "apiKey": "your-hub-api-key"
           }
         }
