@@ -244,6 +244,23 @@ ${nameMapping}
               gatewayToken = raw.gateway?.auth?.token || '';
             } catch { /* no token */ }
 
+            // Check if payload is multimodal JSON (from Hub chat with image)
+            let messages: any[];
+            try {
+              const parsed = JSON.parse(payload);
+              if (parsed.text && parsed.image) {
+                // Multimodal: text + image
+                messages = [{ role: 'user', content: [
+                  { type: 'text', text: parsed.text },
+                  { type: 'image_url', image_url: { url: parsed.image } },
+                ]}];
+              } else {
+                messages = [{ role: 'user', content: payload }];
+              }
+            } catch {
+              messages = [{ role: 'user', content: payload }];
+            }
+
             const url = `http://127.0.0.1:${entry.port}/v1/chat/completions`;
             const res = await fetch(url, {
               method: 'POST',
@@ -253,7 +270,7 @@ ${nameMapping}
               },
               body: JSON.stringify({
                 model: 'openclaw/default',
-                messages: [{ role: 'user', content: payload }],
+                messages,
               }),
               signal: AbortSignal.timeout(55_000),
             });
