@@ -1,6 +1,7 @@
 {
   "name": "openclaw-bridge",
   "version": "0.1.0",
+  "description": "Cross-gateway communication plugin for OpenClaw — agent discovery, file transfer, real-time messaging, and session handoff",
   "type": "module",
   "main": "src/index.ts",
   "openclaw": {
@@ -15,5 +16,14 @@
   "devDependencies": {
     "@types/ws": "^8.18.1",
     "typescript": "^5.7.0"
-  }
+  },
+  "keywords": [
+    "openclaw",
+    "bridge",
+    "multi-agent",
+    "gateway",
+    "communication",
+    "handoff"
+  ],
+  "license": "MIT"
 }
