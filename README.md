@@ -11,6 +11,20 @@ Cross-gateway communication plugin for [OpenClaw](https://github.com/nicepkg/ope
 - **Superuser Tools** — Read/write files and restart remote gateways
 - **Auto-Config** — Automatically patches `openclaw.json` with recommended settings on first run
 
+## Prerequisites
+
+You need [openclaw-bridge-hub](https://www.npmjs.com/package/openclaw-bridge-hub) (v0.2.4+) running on a reachable server first:
+
+```bash
+# On your server:
+npm install -g openclaw-bridge-hub
+openclaw-bridge-hub init          # generates API key — save it!
+openclaw-bridge-hub start         # starts on port 3080
+openclaw-bridge-hub install-service  # auto-start on boot (Linux)
+```
+
+Save the generated API key — you'll need it for the plugin config below.
+
 ## Installation
 
 ```bash
@@ -21,7 +35,7 @@ Or manually: place this plugin in a directory listed in `plugins.load.paths` of 
 
 ## Configuration
 
-Add to `openclaw.json` under `plugins.entries`:
+Add to `openclaw.json` under `plugins.entries` (replace the API key and server URL with your own):
 
 ```json
 {
@@ -97,7 +111,7 @@ User ←→ Discord DM ←→ Main Gateway
 
 ## Requirements
 
-- [openclaw-bridge-hub](https://www.npmjs.com/package/openclaw-bridge-hub) running on a reachable server
+- [openclaw-bridge-hub](https://www.npmjs.com/package/openclaw-bridge-hub) v0.2.4+ running on a reachable server
 - OpenClaw gateway 2026.3.24+
 
 ## License
