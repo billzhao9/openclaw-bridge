@@ -1,4 +1,6 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { parseConfig, getMachineId } from "./config.js";
 import { BridgeRegistry } from "./registry.js";
@@ -245,9 +247,18 @@ ${nameMapping}
           relayClient = new MessageRelayClient(config.agentId, config.messageRelay, api.logger, machineId);
           relayClient.setAgentName(config.agentName);
           relayClient.setOnConflictRename((newAgentId, newAgentName) => {
-            api.logger.info(`[bridge] Conflict rename: ${entry.agentId} → ${newAgentId}, ${entry.agentName} → ${newAgentName}`);
+            const oldAgentId = entry.agentId;
+            api.logger.info(`[bridge] Conflict rename: ${oldAgentId} → ${newAgentId}, ${entry.agentName} → ${newAgentName}`);
+
+            // Deregister old agentId from Hub registry before switching
+            registry.deregister(oldAgentId).catch((err: any) => {
+              api.logger.warn(`[bridge] Failed to deregister old agentId "${oldAgentId}": ${err.message}`);
+            });
+
             entry.agentId = newAgentId;
             entry.agentName = newAgentName;
+            config.agentId = newAgentId;
+            config.agentName = newAgentName;
 
             // Persist the renamed agentId to openclaw.json so it survives restarts
             const configPath = process.env.OPENCLAW_CONFIG_PATH;
@@ -276,13 +287,20 @@ ${nameMapping}
 
           // Helper: call local gateway chat completions API
           async function callGatewayAPI(payload: string): Promise<string> {
-            const configPath = process.env.OPENCLAW_CONFIG_PATH
-              || `${process.env.OPENCLAW_HOME || ''}/openclaw.json`;
             let gatewayToken = '';
-            try {
-              const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
-              gatewayToken = raw.gateway?.auth?.token || '';
-            } catch { /* no token */ }
+            const configCandidates = [
+              process.env.OPENCLAW_CONFIG_PATH,
+              process.env.OPENCLAW_HOME ? `${process.env.OPENCLAW_HOME}/openclaw.json` : '',
+              join(homedir(), '.openclaw', 'openclaw.json'),
+            ].filter(Boolean) as string[];
+            for (const cp of configCandidates) {
+              try {
+                if (!existsSync(cp)) continue;
+                const raw = JSON.parse(readFileSync(cp, 'utf-8'));
+                gatewayToken = raw.gateway?.auth?.token || '';
+                if (gatewayToken) break;
+              } catch { /* try next */ }
+            }
 
             // Check if payload is multimodal JSON (from Hub chat with image)
             let messages: any[];

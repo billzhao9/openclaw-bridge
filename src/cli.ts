@@ -918,7 +918,21 @@ function checkAndFixBridgeConfig(): number {
         fixes++;
       }
 
-      // Fix 3: Check required fields
+      // Fix 3: Ensure gateway.auth is configured (needed for callGatewayAPI)
+      if (!config.gateway?.auth?.token) {
+        config.gateway = config.gateway || {};
+        config.gateway.auth = config.gateway.auth || {};
+        if (!config.gateway.auth.mode) config.gateway.auth.mode = "token";
+        if (!config.gateway.auth.token) {
+          const token = `bridge-${bridgeConfig.agentId || "agent"}-${Date.now().toString(36)}`;
+          config.gateway.auth.token = token;
+          console.log(`  [${configPath}] Added gateway.auth.token`);
+          changed = true;
+          fixes++;
+        }
+      }
+
+      // Fix 4: Check required fields
       const required = ["role", "agentId", "agentName"];
       for (const field of required) {
         if (!bridgeConfig[field]) {
@@ -926,7 +940,7 @@ function checkAndFixBridgeConfig(): number {
         }
       }
 
-      // Fix 4: Check fileRelay and registry baseUrls aren't pointing to localhost in remote setup
+      // Fix 5: Check fileRelay and registry baseUrls aren't pointing to localhost in remote setup
       if (bridgeConfig.registry?.baseUrl && bridgeConfig.fileRelay?.baseUrl) {
         const regUrl = bridgeConfig.registry.baseUrl as string;
         const relayUrl = bridgeConfig.fileRelay.baseUrl as string;
