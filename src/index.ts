@@ -13,6 +13,10 @@ import { MessageRelayClient } from "./message-relay.js";
 import * as proxySession from "./session.js";
 import { LocalManager } from "./manager/local-manager.js";
 import type { OpenClawPluginApi, RegistryEntry } from "./types.js";
+import { buildMentionMap, applyMentions } from "./mention-interceptor.js";
+import { DiscordApi } from "./discord-api.js";
+import { ProjectManager } from "./project-manager.js";
+import { CircuitBreaker } from "./circuit-breaker.js";
 
 function resolveWorkspacePath(agentId: string): string {
   // Try reading workspace from openclaw.json config
@@ -119,6 +123,10 @@ const bridgePlugin = {
     const registry = new BridgeRegistry(config, api.logger);
     const fileOps = new BridgeFileOps(config, machineId, workspacePath, api.logger);
     const restartManager = new BridgeRestart(config, machineId, registry, api.logger);
+    const discordApi = new DiscordApi(api.logger);
+    discordApi.loadToken();
+    const projectMgr = new ProjectManager(workspacePath, api.logger);
+    const circuitBreaker = new CircuitBreaker(projectMgr, api.logger);
 
     let relayClient: MessageRelayClient | null = null;
 
@@ -716,6 +724,361 @@ ${nameMapping}
         });
         proxySession.updateCurrentAgent(params.agentId as string, params.agentId as string);
         return { status: "switched", newAgent: params.agentId };
+      },
+    });
+
+    // ── Thread Management Tools ──────────────────────────────────────
+
+    api.registerTool({
+      name: "bridge_create_project_thread",
+      label: "Bridge Create Project Thread",
+      description: "Create a Discord Thread for a project in the current channel. Returns threadId.",
+      parameters: Type.Object({
+        projectName: Type.String({ description: "Project name for the thread title" }),
+        agentIds: Type.Array(Type.String(), { description: "Agent IDs to mention in kickoff message" }),
+      }),
+      async execute(_id, params) {
+        if (!discordApi.isAvailable) return { error: "Discord API not available — no bot token configured" };
+        const projectName = params.projectName as string;
+        const agentIds = params.agentIds as string[];
+
+        const discordChannel = entry.channels.find(c => c.type === "discord");
+        if (!discordChannel) return { error: "No Discord channel configured for this agent" };
+
+        const agents = await discoverAll(registry, offlineThresholdMs);
+        const mentions = agentIds
+          .map(id => agents.find(a => a.agentId === id))
+          .filter(Boolean)
+          .map(a => a!.discordId ? `<@${a!.discordId}>` : a!.agentName)
+          .join(" ");
+
+        const thread = await discordApi.createThread(
+          discordChannel.channelId,
+          `🎬 ${projectName} — PM Managed`.substring(0, 100),
+          `📋 **Project: ${projectName}**\n\nTeam: ${mentions}\n\nProject thread created. Updates will be posted here.`,
+        );
+        return { threadId: thread.id, threadName: thread.name };
+      },
+    });
+
+    api.registerTool({
+      name: "bridge_create_sub_thread",
+      label: "Bridge Create Sub Thread",
+      description: "Create a sub-thread for an agent's isolated task work.",
+      parameters: Type.Object({
+        projectId: Type.String({ description: "Project ID" }),
+        agentId: Type.String({ description: "Agent ID assigned to this task" }),
+        taskTitle: Type.String({ description: "Brief task title" }),
+      }),
+      async execute(_id, params) {
+        if (!discordApi.isAvailable) return { error: "Discord API not available" };
+        const discordChannel = entry.channels.find(c => c.type === "discord");
+        if (!discordChannel) return { error: "No Discord channel configured" };
+
+        const agents = await discoverAll(registry, offlineThresholdMs);
+        const agent = agents.find(a => a.agentId === params.agentId);
+        const agentName = agent?.agentName || (params.agentId as string);
+
+        const thread = await discordApi.createThread(
+          discordChannel.channelId,
+          `📋 ${agentName} — ${params.taskTitle}`.substring(0, 100),
+        );
+
+        const project = projectMgr.readProject(params.projectId as string);
+        if (project) {
+          const task = project.tasks.find(t => t.agent === params.agentId && !t.subThreadId);
+          if (task) {
+            task.subThreadId = thread.id;
+            projectMgr.writeProject(project);
+          }
+        }
+
+        return { subThreadId: thread.id, threadName: thread.name };
+      },
+    });
+
+    api.registerTool({
+      name: "bridge_post_to_thread",
+      label: "Bridge Post To Thread",
+      description: "Post a message to a specific Discord Thread.",
+      parameters: Type.Object({
+        threadId: Type.String({ description: "Discord Thread ID" }),
+        message: Type.String({ description: "Message content" }),
+      }),
+      async execute(_id, params) {
+        if (!discordApi.isAvailable) return { error: "Discord API not available" };
+        const agents = await discoverAll(registry, offlineThresholdMs);
+        const mentionMap = buildMentionMap(agents);
+        const processed = applyMentions(params.message as string, mentionMap);
+        await discordApi.sendMessage(params.threadId as string, processed);
+        return { success: true };
+      },
+    });
+
+    // ── Project Management Tools ─────────────────────────────────────
+
+    api.registerTool({
+      name: "bridge_project_create",
+      label: "Bridge Project Create",
+      description: "Initialize a new project with directory structure and state tracking.",
+      parameters: Type.Object({
+        name: Type.String({ description: "Project name" }),
+        description: Type.String({ description: "Brief project description" }),
+      }),
+      async execute(_id, params) {
+        const project = projectMgr.createProject(params.name as string, params.description as string);
+        return { projectId: project.id, projectDir: projectMgr.getProjectDir(project.id) };
+      },
+    });
+
+    api.registerTool({
+      name: "bridge_project_status",
+      label: "Bridge Project Status",
+      description: "Get project status. Omit projectId to see all active projects.",
+      parameters: Type.Object({
+        projectId: Type.Optional(Type.String({ description: "Project ID (omit for global overview)" })),
+      }),
+      async execute(_id, params) {
+        if (params.projectId) {
+          const project = projectMgr.readProject(params.projectId as string);
+          if (!project) return { error: `Project "${params.projectId}" not found` };
+          return { project };
+        }
+        return projectMgr.listProjects();
+      },
+    });
+
+    // ── Task Management Tools ────────────────────────────────────────
+
+    api.registerTool({
+      name: "bridge_task_assign",
+      label: "Bridge Task Assign",
+      description: "Assign a task to an agent within a project. Sends the brief via Bridge Hub.",
+      parameters: Type.Object({
+        projectId: Type.String({ description: "Project ID" }),
+        agentId: Type.String({ description: "Agent to assign to" }),
+        title: Type.String({ description: "Task title" }),
+        brief: Type.String({ description: "Detailed task brief with asset paths" }),
+        dependencies: Type.Optional(Type.Array(Type.String(), { description: "Task IDs that must complete first" })),
+      }),
+      async execute(_id, params) {
+        const task = projectMgr.addTask(
+          params.projectId as string,
+          params.agentId as string,
+          params.title as string,
+          params.brief as string,
+          (params.dependencies as string[]) || [],
+        );
+        if (!task) return { error: "Failed to create task — project not found" };
+
+        const ready = task.dependencies.length === 0 ||
+          projectMgr.getReadyTasks(params.projectId as string).some(t => t.id === task.id);
+
+        if (ready) {
+          projectMgr.updateTaskStatus(params.projectId as string, task.id, "in_progress");
+          if (relayClient?.isConnected) {
+            const msgId = `task_${Date.now()}`;
+            try {
+              await relayClient.sendAndWait({
+                type: "message",
+                id: msgId,
+                from: config.agentId,
+                to: params.agentId as string,
+                payload: `[Project: ${params.projectId}] [Task: ${task.id}] ${params.brief}`,
+              }, 120_000);
+            } catch { /* agent may not reply immediately */ }
+          }
+        }
+
+        return { taskId: task.id, status: ready ? "in_progress" : "pending" };
+      },
+    });
+
+    api.registerTool({
+      name: "bridge_task_reassign",
+      label: "Bridge Task Reassign",
+      description: "Reassign a task to a different agent.",
+      parameters: Type.Object({
+        projectId: Type.String({ description: "Project ID" }),
+        taskId: Type.String({ description: "Task ID" }),
+        newAgentId: Type.String({ description: "New agent ID" }),
+        reason: Type.String({ description: "Reason for reassignment" }),
+      }),
+      async execute(_id, params) {
+        const task = projectMgr.updateTaskStatus(
+          params.projectId as string,
+          params.taskId as string,
+          "pending",
+          { agent: params.newAgentId as string, blockType: null, blockReason: null } as any,
+        );
+        if (!task) return { error: "Task or project not found" };
+        return { taskId: task.id, newAgent: params.newAgentId, status: "pending" };
+      },
+    });
+
+    api.registerTool({
+      name: "bridge_task_update",
+      label: "Bridge Task Update",
+      description: "Post a progress update / thinking summary to the project's main Thread.",
+      parameters: Type.Object({
+        projectId: Type.String({ description: "Project ID" }),
+        taskId: Type.String({ description: "Task ID" }),
+        summary: Type.String({ description: "Progress summary" }),
+      }),
+      async execute(_id, params) {
+        const project = projectMgr.readProject(params.projectId as string);
+        if (!project) return { error: "Project not found" };
+        const task = project.tasks.find(t => t.id === params.taskId);
+        if (!task) return { error: "Task not found" };
+
+        if (project.threadId && discordApi.isAvailable) {
+          const agents = await discoverAll(registry, offlineThresholdMs);
+          const mentionMap = buildMentionMap(agents);
+          const processed = applyMentions(
+            `📊 **${task.title}** (${config.agentName}): ${params.summary}`,
+            mentionMap,
+          );
+          await discordApi.sendMessage(project.threadId, processed);
+        }
+
+        return { success: true };
+      },
+    });
+
+    api.registerTool({
+      name: "bridge_task_complete",
+      label: "Bridge Task Complete",
+      description: "Mark a task as completed with summary and output paths.",
+      parameters: Type.Object({
+        projectId: Type.String({ description: "Project ID" }),
+        taskId: Type.String({ description: "Task ID" }),
+        summary: Type.String({ description: "Completion summary" }),
+        outputPaths: Type.Optional(Type.Array(Type.String(), { description: "Output file paths" })),
+      }),
+      async execute(_id, params) {
+        const outputs = (params.outputPaths as string[]) || [];
+        const task = projectMgr.updateTaskStatus(
+          params.projectId as string,
+          params.taskId as string,
+          "completed",
+          { outputs },
+        );
+        if (!task) return { error: "Task or project not found" };
+
+        if (relayClient?.isConnected && config.agentId !== "pm") {
+          relayClient.send({
+            type: "message",
+            id: `complete_${Date.now()}`,
+            from: config.agentId,
+            to: "pm",
+            payload: `[Task Complete] Project: ${params.projectId}, Task: ${params.taskId}. ${params.summary}`,
+          });
+        }
+
+        return { taskId: task.id, status: "completed", outputs };
+      },
+    });
+
+    api.registerTool({
+      name: "bridge_task_blocked",
+      label: "Bridge Task Blocked",
+      description: "Report that a task is blocked. Types: capability_missing, dependency_failed, clarification_needed.",
+      parameters: Type.Object({
+        projectId: Type.String({ description: "Project ID" }),
+        taskId: Type.String({ description: "Task ID" }),
+        blockType: Type.String({ description: "capability_missing | dependency_failed | clarification_needed" }),
+        reason: Type.String({ description: "Detailed blocker explanation" }),
+      }),
+      async execute(_id, params) {
+        const task = projectMgr.updateTaskStatus(
+          params.projectId as string,
+          params.taskId as string,
+          "blocked",
+          { blockType: params.blockType as any, blockReason: params.reason as string },
+        );
+        if (!task) return { error: "Task or project not found" };
+
+        if (relayClient?.isConnected && config.agentId !== "pm") {
+          relayClient.send({
+            type: "message",
+            id: `blocked_${Date.now()}`,
+            from: config.agentId,
+            to: "pm",
+            payload: `[Task Blocked] Project: ${params.projectId}, Task: ${params.taskId}, Type: ${params.blockType}. ${params.reason}`,
+          });
+        }
+
+        return { taskId: task.id, status: "blocked", blockType: params.blockType };
+      },
+    });
+
+    // ── Asset Management Tools ───────────────────────────────────────
+
+    api.registerTool({
+      name: "bridge_asset_publish",
+      label: "Bridge Asset Publish",
+      description: "Publish an output asset to the project's asset directory.",
+      parameters: Type.Object({
+        projectId: Type.String({ description: "Project ID" }),
+        filePath: Type.String({ description: "Path to file (relative to workspace)" }),
+        assetType: Type.String({ description: "Asset type: storyboard, script, reference-images, video, etc." }),
+        description: Type.String({ description: "Brief description" }),
+        taskId: Type.String({ description: "Task ID that produced this asset" }),
+      }),
+      async execute(_id, params) {
+        const fullPath = join(workspacePath, params.filePath as string);
+        const asset = projectMgr.publishAsset(
+          params.projectId as string,
+          fullPath,
+          params.assetType as string,
+          params.description as string,
+          config.agentId,
+          params.taskId as string,
+        );
+        if (!asset) return { error: "Project not found" };
+        return { assetId: asset.id, path: asset.path };
+      },
+    });
+
+    api.registerTool({
+      name: "bridge_asset_list",
+      label: "Bridge Asset List",
+      description: "List all assets in a project, optionally filtered.",
+      parameters: Type.Object({
+        projectId: Type.String({ description: "Project ID" }),
+        type: Type.Optional(Type.String({ description: "Filter by asset type" })),
+        agent: Type.Optional(Type.String({ description: "Filter by producer agent ID" })),
+      }),
+      async execute(_id, params) {
+        const assets = projectMgr.listAssets(
+          params.projectId as string,
+          params.type as string | undefined,
+          params.agent as string | undefined,
+        );
+        return { assets };
+      },
+    });
+
+    api.registerTool({
+      name: "bridge_asset_get",
+      label: "Bridge Asset Get",
+      description: "Get the full path and metadata of a specific asset.",
+      parameters: Type.Object({
+        projectId: Type.String({ description: "Project ID" }),
+        assetId: Type.Optional(Type.String({ description: "Asset ID" })),
+        assetType: Type.Optional(Type.String({ description: "Asset type to find latest of" })),
+      }),
+      async execute(_id, params) {
+        const assets = projectMgr.listAssets(params.projectId as string);
+        let asset: any;
+        if (params.assetId) {
+          asset = assets.find(a => a.id === params.assetId);
+        } else if (params.assetType) {
+          asset = assets.filter(a => a.type === params.assetType).pop();
+        }
+        if (!asset) return { error: "Asset not found" };
+        const fullPath = join(projectMgr.getProjectDir(params.projectId as string), asset.path);
+        return { ...asset, fullPath };
       },
     });
   },
