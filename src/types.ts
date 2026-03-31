@@ -98,3 +98,58 @@ export type OpenClawPluginApi = {
     opts?: { priority?: number },
   ) => void;
 };
+
+// ── Project Management Types ─────────────────────────────────────────
+
+export interface AssetData {
+  id: string;
+  path: string;
+  type: string;
+  producer: string;
+  taskId: string;
+  description: string;
+  publishedAt: string;
+}
+
+export type TaskStatus = "pending" | "in_progress" | "completed" | "blocked" | "cancelled";
+export type BlockType = "capability_missing" | "dependency_failed" | "clarification_needed";
+
+export interface TaskData {
+  id: string;
+  agent: string;
+  title: string;
+  brief: string;
+  status: TaskStatus;
+  subThreadId: string | null;
+  dependencies: string[];
+  rounds: number;
+  maxRounds: number;
+  outputs: string[];
+  blockType: BlockType | null;
+  blockReason: string | null;
+  reworkCount: number;
+  assignedAt: string;
+  completedAt: string | null;
+}
+
+export type ProjectStatus = "in_progress" | "waiting_clarification" | "completed" | "paused" | "cancelled";
+
+export interface ProjectData {
+  id: string;
+  name: string;
+  description: string;
+  threadId: string | null;
+  status: ProjectStatus;
+  createdAt: string;
+  tasks: TaskData[];
+  assets: AssetData[];
+  totalRounds: number;
+}
+
+export interface ProjectIndex {
+  activeProjects: Array<{
+    id: string;
+    status: ProjectStatus;
+    threadId: string | null;
+  }>;
+}
