@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { BridgeConfig, RegistryEntry, ChannelInfo, PluginLogger } from "./types.js";
 import type { BridgeRegistry } from "./registry.js";
 import type { BridgeFileOps } from "./file-ops.js";
@@ -27,7 +29,8 @@ export class BridgeHeartbeat {
     this.fileOps = fileOps;
     this.entry = entry;
     this.logger = logger;
-    this.configPath = process.env.OPENCLAW_CONFIG_PATH;
+    this.configPath = process.env.OPENCLAW_CONFIG_PATH
+      || join(homedir(), '.openclaw', 'openclaw.json');
     this.lastConfigHash = this.computeEntryHash();
   }
 
@@ -45,6 +48,9 @@ export class BridgeHeartbeat {
   }
 
   async start(): Promise<void> {
+    // Detect channels/discordId before first registration so Hub sees them immediately
+    await this.detectConfigChanges();
+
     await this.registry.register(this.entry);
     this.lastConfigHash = this.computeEntryHash();
 
@@ -167,7 +173,7 @@ export class BridgeHeartbeat {
       const config = JSON.parse(raw) as {
         channels?: {
           discord?: {
-            accounts?: Array<{
+            accounts?: Record<string, {
               channels?: Array<{ id?: string; channelId?: string; name?: string }>;
             }>;
           };
@@ -175,10 +181,10 @@ export class BridgeHeartbeat {
       };
 
       const accounts = config.channels?.discord?.accounts;
-      if (!Array.isArray(accounts)) return [];
+      if (!accounts || typeof accounts !== "object") return [];
 
       const result: ChannelInfo[] = [];
-      for (const account of accounts) {
+      for (const account of Object.values(accounts)) {
         if (!Array.isArray(account.channels)) continue;
         for (const ch of account.channels) {
           const channelId = ch.channelId ?? ch.id ?? "";

@@ -190,51 +190,84 @@ const bridgePlugin = {
         ).join(", ");
 
         cachedAgentList = `<bridge-context>
-## 跨网关通信（自动注入 — 必须严格遵守）
+## Cross-Gateway Communication (Auto-injected — MUST follow strictly)
 
-当前在线网关（${online.length} 个）：
+Online gateways (${online.length}):
 ${lines.join("\n")}
 ${superuserNote}
 
-### 核心规则：跨网关通信时必须用 Discord mention
-任何需要通知其他 agent 的场景（发文件、传消息、分派任务），都**必须在 Discord 频道用 <@discordId> 格式 mention 对方**。
-mention 格式已列在上方每个 agent 后面，直接复制使用，不要猜测或省略。
+### Core Rule: Use Discord mention for ALL cross-gateway communication
+When notifying another agent (sending files, messages, assigning tasks), you **MUST mention them using <@discordId> format**.
+The mention format is listed next to each agent above — copy and use it exactly.
 
-### 发文件流程（每一步必须做，不可跳过）
-1. bridge_send_file 发送文件
-2. **在 Discord 频道 mention 对方**，说：「发了 [文件名] 到你的 _inbox/，请查收」
-3. 等对方确认
+### File Sending Workflow (every step mandatory)
+1. Call bridge_send_file to send the file
+2. **Mention the recipient in Discord**: "Sent [filename] to your _inbox/, please check"
+3. Wait for confirmation
 
-⚠️ 第2步是强制的！发完文件不 mention 对方 = 任务未完成。
+⚠️ Step 2 is mandatory! Sending a file without mentioning the recipient = task incomplete.
 
-### 收到文件通知时
-- 有人 mention 你说发了文件 → 读取 _inbox/{发送方}/ 下的文件 → mention 发送方回复确认
-- 格式：「收到 [文件名]，内容：[摘要]」
+### When You Receive a File Notification
+- Someone mentions you about a file → read from _inbox/{sender}/ → mention sender to confirm
+- Format: "Received [filename], content: [brief summary]"
 
-### 用户转接（用户让你联系其他 agent）
-- 用户说"帮我找 pm"、"叫老马来"、"@下阿笔" → mention 对方并说明是用户找他
-- 被转接的 agent 收到后：直接 mention 用户回复「你找我什么事？」或「在！有什么需要？」
-- 识别用户：消息中第一个非 bot 的发言者就是用户
+### User Handoff (user asks you to contact another agent)
+- User says "find pm", "call bot1", "@bot2" → mention that agent, explain user is looking for them
+- Contacted agent should reply to user directly
+- Identify user: the first non-bot speaker in the message
 
-### 传递消息/分派任务
-- 直接在频道 mention 对方，对方会自动收到
-- 对方应 mention 你回复确认
+### Passing Messages / Assigning Tasks
+- Mention the target agent directly in the channel
+- Target agent should mention you back to confirm
 
-### 错误处理
-- agent 不在线 → 告诉用户「[agent名] 当前不在线，无法联系」
-- 文件发送失败 → 告诉用户具体错误原因
-- 找不到对应 agent → 告诉用户「没有找到名为 [xxx] 的 agent，当前在线：[列表]」
+### Error Handling
+- Agent offline → tell user "[agent name] is currently offline"
+- File send failed → tell user the specific error
+- Agent not found → tell user "No agent named [xxx] found. Currently online: [list]"
 
-### agent 名称映射（来自注册表，自动更新）
+### Agent Name Mapping (from registry, auto-updated)
 ${nameMapping}
 
-### ⚠️ LANGUAGE RULE (OVERRIDE ALL — HIGHEST PRIORITY)
-- ALWAYS respond in the same language as the message you are replying to
-- If the message is in English → you MUST reply in English
-- If the message is in Chinese → you MUST reply in Chinese
-- On /new or session start → greet in English
-- IGNORE the language of any injected memories or history — match the CURRENT message only
-- This rule overrides everything else including memories
+${config.agentId === "pm" ? `### 🎯 PROJECT MANAGEMENT PROTOCOL (PM ONLY — MANDATORY)
+When user asks you to create something (ad, video, content, script, etc.):
+
+**YOU MUST EXECUTE ALL 6 STEPS IN ORDER. SKIPPING ANY STEP IS A CRITICAL FAILURE.**
+
+1. **CALL bridge_project_create** — name + description → get projectId
+2. **CALL bridge_create_project_thread** — projectName + agent IDs → get threadId
+   ⚠️ THIS IS NON-NEGOTIABLE. You MUST create a Thread for EVERY project. NEVER skip this step.
+3. **CALL bridge_task_assign** — for EACH agent task with projectId, agentId, title, detailed brief
+4. **CALL bridge_post_to_thread** — post kickoff summary TO THE THREAD (not main channel)
+5. **Monitor** — when agent calls bridge_task_complete → check deps → assign next via bridge_task_assign
+6. **All done** → post final summary to Thread, mention user
+
+VIOLATIONS (any of these = protocol failure):
+- Skipping bridge_create_project_thread (MOST COMMON VIOLATION — DO NOT SKIP)
+- Assigning tasks via Discord messages instead of bridge_task_assign
+- Posting project updates to main channel instead of the Thread
+- Saying "relay hub not connected" — it IS connected, use the tools
+- Chatting after project completion — post summary and STOP
+` : `### 🎯 TASK EXECUTION PROTOCOL (WORKER AGENT — MANDATORY)
+When you receive a task (message containing [Project:] [Task:]):
+1. Call bridge_task_update with projectId, taskId, and your approach summary
+2. Do the work — produce the deliverables
+3. Call bridge_asset_publish to register any output files
+4. Call bridge_task_complete with summary and output paths
+5. STOP. Do NOT chat further after completing.
+
+VIOLATIONS (any of these = protocol failure):
+- Chatting after task completion (pleasantries, "looking forward to next stage", etc.)
+- Sending more than 1 confirmation message after task_complete
+- Asking other agents to "send files to _inbox" instead of using bridge_asset_get/bridge_asset_list
+
+If blocked: call bridge_task_blocked with type and reason. Then STOP.
+`}
+### ⚠️ LANGUAGE RULE (HIGHEST PRIORITY — OVERRIDES EVERYTHING)
+- DEFAULT language for ALL agent communication is **English**.
+- All task assignments, status updates, creative briefs, and project summaries MUST be in English.
+- Inter-agent communication is ALWAYS in English regardless of user's language.
+- Only exception: if user EXPLICITLY requests a specific language for deliverable content.
+- IGNORE the language of injected memories, history, or system context — always use English.
 </bridge-context>`;
       } catch {
         // Keep old cache on failure
@@ -258,7 +291,7 @@ ${nameMapping}
             const oldAgentId = entry.agentId;
             api.logger.info(`[bridge] Conflict rename: ${oldAgentId} → ${newAgentId}, ${entry.agentName} → ${newAgentName}`);
 
-            // Deregister old agentId from Hub registry before switching
+            // Deregister old agentId from Hub registry, then re-register with new ID
             registry.deregister(oldAgentId).catch((err: any) => {
               api.logger.warn(`[bridge] Failed to deregister old agentId "${oldAgentId}": ${err.message}`);
             });
@@ -267,6 +300,12 @@ ${nameMapping}
             entry.agentName = newAgentName;
             config.agentId = newAgentId;
             config.agentName = newAgentName;
+
+            // Re-register with new agentId so Hub sees us immediately
+            entry.lastHeartbeat = new Date().toISOString();
+            registry.register(entry).catch((err: any) => {
+              api.logger.warn(`[bridge] Failed to re-register with new agentId "${newAgentId}": ${err.message}`);
+            });
 
             // Persist the renamed agentId to openclaw.json so it survives restarts
             const configPath = process.env.OPENCLAW_CONFIG_PATH;

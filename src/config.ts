@@ -1,4 +1,7 @@
-import { hostname } from "node:os";
+import { hostname, homedir } from "node:os";
+import { join } from "node:path";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import type { BridgeConfig } from "./types.js";
 
 const DEFAULTS = {
@@ -67,6 +70,30 @@ export function parseConfig(raw: unknown): BridgeConfig {
   };
 }
 
+/**
+ * Returns a stable machine identifier.
+ * Persists a UUID to ~/.openclaw/.machine-id on first call so the ID
+ * survives hostname changes (common on macOS where hostname ≠ LocalHostName).
+ * Falls back to hostname() if the file cannot be written.
+ */
 export function getMachineId(): string {
-  return hostname();
+  const dir = join(homedir(), ".openclaw");
+  const idFile = join(dir, ".machine-id");
+  try {
+    const existing = readFileSync(idFile, "utf-8").trim();
+    if (existing) return existing;
+  } catch {
+    // File doesn't exist yet — generate one
+  }
+  // Use hostname as the base for readability, but append a short UUID suffix
+  // so renames don't change the identity
+  const id = `${hostname()}-${randomUUID().slice(0, 8)}`;
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(idFile, id, "utf-8");
+  } catch {
+    // Can't persist — fall back to hostname
+    return hostname();
+  }
+  return id;
 }

@@ -1,0 +1,32 @@
+import type { PluginLogger, MessageRelayConfig } from './types.js';
+type MessageHandler = (msg: any) => void;
+export declare class MessageRelayClient {
+    private ws;
+    private agentId;
+    private config;
+    private logger;
+    private handlers;
+    private reconnectDelay;
+    private maxReconnectDelay;
+    private shouldReconnect;
+    private authenticated;
+    private reconnectTimer;
+    private pendingCallbacks;
+    private machineId;
+    private originalAgentId;
+    private originalAgentName;
+    private conflictRetries;
+    private maxConflictRetries;
+    private onConflictRename;
+    constructor(agentId: string, config: MessageRelayConfig, logger: PluginLogger, machineId: string);
+    setAgentName(name: string): void;
+    setOnConflictRename(cb: (newAgentId: string, newAgentName: string) => void): void;
+    connect(): Promise<void>;
+    private scheduleReconnect;
+    on(type: string, handler: MessageHandler): void;
+    send(msg: any): void;
+    sendAndWait(msg: any, timeoutMs?: number): Promise<any>;
+    disconnect(): Promise<void>;
+    get isConnected(): boolean;
+}
+export {};

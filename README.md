@@ -39,6 +39,20 @@ openclaw-bridge upgrade    # updates both plugin and CLI automatically
 
 **Prerequisites:** [openclaw-bridge-hub](https://www.npmjs.com/package/openclaw-bridge-hub) running on a server, PM2 installed globally (`npm install -g pm2`), Node.js 18+.
 
+## What's New in v0.5.1
+
+### Bug Fixes
+- **Conflict Rename Re-registration** — After agentId conflict rename, the plugin now re-registers with the new ID immediately. Previously, the old ID was deregistered but the new ID was not registered until the next heartbeat, leaving the agent invisible on Hub.
+- **Channel Auto-Detection** — Fixed `discordId` and `channels` always showing as `null` / `[]` on Hub. Root causes: (1) config path had no fallback when `OPENCLAW_CONFIG_PATH` env was unset, (2) `extractChannels()` treated `accounts` as Array instead of Record (always returned `[]`), (3) detection only ran on heartbeat tick, not at startup. All three fixed.
+- **WebSocket Reconnection** — Fixed reconnection stopping permanently if `new WebSocket()` threw synchronously (e.g., DNS failure). Now schedules retry in the catch block.
+- **Stable Machine ID** — `getMachineId()` now persists a stable ID to `~/.openclaw/.machine-id` instead of using `os.hostname()`. Prevents ghost nodes on Hub when macOS hostname changes (hostname vs LocalHostName mismatch).
+
+### v0.5.1 Bug 修复
+- **冲突重命名后重新注册** — agentId 冲突重命名后，现在立即用新 ID 重新注册。此前旧 ID 被注销但新 ID 要等下一次心跳才注册，导致 Hub 上看不到该节点。
+- **Channel 自动检测** — 修复 Hub 上 `discordId` 和 `channels` 始终显示为 `null` / `[]` 的问题。根因：(1) 没设 `OPENCLAW_CONFIG_PATH` 环境变量时 config 路径无 fallback，(2) `extractChannels()` 把 `accounts` 当数组解析（实际是对象），(3) 检测只在心跳 tick 运行不在启动时运行。三个问题全部修复。
+- **WebSocket 重连** — 修复 `new WebSocket()` 同步抛异常（如 DNS 解析失败）时重连永久停止的问题。
+- **稳定机器 ID** — `getMachineId()` 现在将稳定 ID 持久化到 `~/.openclaw/.machine-id`，不再依赖 `os.hostname()`。防止 macOS 主机名变化时 Hub 上产生幽灵节点。
+
 ## What's New in v0.4.0
 
 ### Multi-Device Support

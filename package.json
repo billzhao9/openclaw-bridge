@@ -1,6 +1,6 @@
 {
   "name": "openclaw-bridge",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "author": "Bill Zhao (https://www.linkedin.com/in/billzhaodi/)",
   "description": "OpenClaw plugin for cross-gateway communication — agent discovery, file transfer, real-time messaging, session handoff, and local process management. Install as plugin: openclaw plugins install openclaw-bridge",
   "type": "module",

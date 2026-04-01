@@ -176,6 +176,10 @@ export class MessageRelayClient {
         });
       } catch (err: any) {
         settle(reject, err);
+        // No 'close' event will fire if constructor threw — schedule reconnect manually
+        if (this.shouldReconnect) {
+          this.scheduleReconnect();
+        }
       }
     });
   }
@@ -191,7 +195,10 @@ export class MessageRelayClient {
         this.logger.info('Reconnected to Message Relay Hub');
       } catch {
         this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
-        // connect() failure triggers 'close' which calls scheduleReconnect again
+        // If connect() failure didn't trigger 'close' (e.g., constructor threw),
+        // scheduleReconnect was already called in the catch block above.
+        // If 'close' did fire, scheduleReconnect is called from the close handler.
+        // Either way, the next reconnect is already scheduled.
       }
     }, this.reconnectDelay);
   }
