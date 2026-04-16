@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Type } from "@sinclair/typebox";
@@ -725,6 +725,130 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
                             }
                         });
                     }
+                    // PM inbox auto-organizer — periodically scan inbox and register files as project assets.
+                    // Files may arrive via bridge_send_file without a corresponding register_asset relay message
+                    // (relay down, bot used wrong tool, etc.). This scanner catches those orphaned files.
+                    if (config.isProjectManager) {
+                        const inboxDir = join(workspacePath, '_inbox');
+                        setInterval(() => {
+                            try {
+                                if (!existsSync(inboxDir))
+                                    return;
+                                const agentDirs = readdirSync(inboxDir).filter(d => {
+                                    const p = join(inboxDir, d);
+                                    try {
+                                        return statSync(p).isDirectory();
+                                    }
+                                    catch {
+                                        return false;
+                                    }
+                                });
+                                // Get all active projects
+                                const projects = projectMgr.listProjects();
+                                const activeProjects = (projects.activeProjects || [])
+                                    .map(p => projectMgr.readProject(p.id))
+                                    .filter(Boolean);
+                                for (const agentDir of agentDirs) {
+                                    const dirPath = join(inboxDir, agentDir);
+                                    const files = readdirSync(dirPath);
+                                    for (const file of files) {
+                                        const filePath = join(dirPath, file);
+                                        try {
+                                            if (!statSync(filePath).isFile())
+                                                continue;
+                                        }
+                                        catch {
+                                            continue;
+                                        }
+                                        // Try to match file to a project by checking if any project slug appears in the filename
+                                        let matched = false;
+                                        for (const project of activeProjects) {
+                                            if (!project)
+                                                continue;
+                                            const slug = project.id.replace(/-[a-f0-9]{10}$/, ''); // remove UUID suffix
+                                            if (file.toLowerCase().includes(slug.toLowerCase()) || file.includes(project.id)) {
+                                                // Infer asset type from filename
+                                                let assetType = 'deliverable';
+                                                const lower = file.toLowerCase();
+                                                if (lower.includes('brief') || lower.includes('direction'))
+                                                    assetType = 'brief';
+                                                else if (lower.includes('script') || lower.includes('narration'))
+                                                    assetType = 'script';
+                                                else if (lower.includes('outline') || lower.includes('plan'))
+                                                    assetType = 'outline';
+                                                else if (lower.includes('storyboard'))
+                                                    assetType = 'storyboard';
+                                                else if (lower.includes('asset_list') || lower.includes('assets'))
+                                                    assetType = 'asset-list';
+                                                else if (lower.match(/\.(jpg|jpeg|png|webp)$/))
+                                                    assetType = 'img';
+                                                else if (lower.match(/\.(mp4|mov|webm)$/))
+                                                    assetType = 'video';
+                                                const asset = projectMgr.publishAsset(project.id, filePath, assetType, `Auto-organized from inbox/${agentDir}/${file}`, agentDir, // producer = agent directory name
+                                                '');
+                                                if (asset) {
+                                                    api.logger.info(`[inbox-organizer] Registered ${file} -> project ${project.id} as ${assetType}`);
+                                                    matched = true;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        // If not matched, leave in inbox
+                                    }
+                                }
+                            }
+                            catch (err) {
+                                api.logger.error(`[inbox-organizer] Error: ${err.message}`);
+                            }
+                        }, 30_000);
+                        // PM outbox scanner — process fallback queues from workers
+                        setInterval(async () => {
+                            try {
+                                const agents = await discoverAll(registry, offlineThresholdMs);
+                                for (const agent of agents) {
+                                    if (agent.agentId === config.agentId)
+                                        continue; // skip self
+                                    const outboxPath = join(agent.workspacePath, '_outbox', 'pending_relay.jsonl');
+                                    if (!existsSync(outboxPath))
+                                        continue;
+                                    const content = readFileSync(outboxPath, 'utf-8').trim();
+                                    if (!content)
+                                        continue;
+                                    const lines = content.split('\n').filter(Boolean);
+                                    api.logger.info(`[outbox-scanner] Processing ${lines.length} queued messages from ${agent.agentId}`);
+                                    for (const line of lines) {
+                                        try {
+                                            const msg = JSON.parse(line);
+                                            if (msg.type === 'task_complete') {
+                                                projectMgr.updateTaskStatus(msg.projectId, msg.taskId, "completed", { outputs: msg.outputPaths || [] });
+                                            }
+                                            else if (msg.type === 'task_update') {
+                                                projectMgr.incrementRounds(msg.projectId, msg.taskId);
+                                            }
+                                            else if (msg.type === 'task_blocked') {
+                                                projectMgr.updateTaskStatus(msg.projectId, msg.taskId, "blocked", { blockType: msg.blockType, blockReason: msg.reason });
+                                            }
+                                            else if (msg.type === 'register_asset') {
+                                                const inboxPath = join(workspacePath, "_inbox", msg.from, msg.filename);
+                                                if (existsSync(inboxPath)) {
+                                                    projectMgr.publishAsset(msg.projectId, inboxPath, msg.assetType || "deliverable", msg.description || "", msg.from, msg.taskId || "");
+                                                    if (msg.taskId) {
+                                                        projectMgr.updateTaskStatus(msg.projectId, msg.taskId, "completed");
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        catch { /* skip malformed lines */ }
+                                    }
+                                    // Clear the processed file
+                                    writeFileSync(outboxPath, '', 'utf-8');
+                                }
+                            }
+                            catch (err) {
+                                api.logger.error(`[outbox-scanner] Error: ${err.message}`);
+                            }
+                        }, 60_000); // Every 60 seconds
+                    }
                     // Handle errors from hub
                     relayClient.on('error', (msg) => {
                         api.logger.error(`Hub error: [${msg.code}] ${msg.message}`);
@@ -877,6 +1001,18 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
                             taskId: params.taskId || "",
                         }, 20_000);
                         autoRegistered = reply;
+                        // Auto-post file to project thread for Discord visibility
+                        if (reply.ok && discordApi.isAvailable) {
+                            try {
+                                const projectReply = await askPm('query_project', { projectId: projectId || "" });
+                                const threadId = projectReply?.project?.threadId;
+                                if (threadId) {
+                                    const displayName = localPath.split(/[\\/]/).pop() || "file";
+                                    await discordApi.sendMessageWithFile(threadId, join(workspacePath, localPath), `📎 **File from ${config.agentName}**: ${displayName}`);
+                                }
+                            }
+                            catch { /* auto-post is best-effort */ }
+                        }
                     }
                     catch (err) {
                         autoRegistered = { ok: false, error: err.message };
@@ -1343,7 +1479,7 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
                                 id: msgId,
                                 from: config.agentId,
                                 to: params.agentId,
-                                payload: `[Project: ${params.projectId}] [Task: ${task.id}] ${params.brief}`,
+                                payload: `[Project: ${params.projectId}] [Task: ${task.id}]\n\n⚠️ IMPORTANT: When calling bridge_task_complete or bridge_submit_deliverable, use EXACTLY these IDs:\n- projectId: "${params.projectId}"\n- taskId: "${task.id}"\nDo NOT use project names or task labels like "T1".\n\n${params.brief}`,
                             }, 120_000);
                         }
                         catch { /* agent may not reply immediately */ }
@@ -1507,6 +1643,18 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
                     }, 30_000);
                     if (!reply.ok)
                         return { error: `PM rejected asset: ${reply.error}` };
+                    // Auto-post file to project thread for Discord visibility
+                    if (discordApi.isAvailable) {
+                        try {
+                            const projectReply = await askPm('query_project', { projectId: params.projectId });
+                            const threadId = projectReply?.project?.threadId;
+                            if (threadId) {
+                                const displayName = params.filePath.split(/[\\/]/).pop() || "deliverable";
+                                await discordApi.sendMessageWithFile(threadId, join(workspacePath, params.filePath), `📎 **Deliverable from ${config.agentName}**: ${displayName}\n${params.description || ""}`);
+                            }
+                        }
+                        catch { /* auto-post is best-effort */ }
+                    }
                     const mention = pm.discordId ? `<@${pm.discordId}>` : pm.agentName;
                     return {
                         success: true,
