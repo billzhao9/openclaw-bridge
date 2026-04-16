@@ -39,6 +39,46 @@ openclaw-bridge upgrade    # updates both plugin and CLI automatically
 
 **Prerequisites:** [openclaw-bridge-hub](https://www.npmjs.com/package/openclaw-bridge-hub) running on a server, PM2 installed globally (`npm install -g pm2`), Node.js 18+.
 
+## What's New in v0.6.0
+
+### Breaking Changes
+- **PM-Centralized Project Architecture** — `bridge_project_create`, `bridge_task_assign`, `bridge_task_reassign`, `bridge_asset_publish`, `bridge_create_project_thread`, and `bridge_create_sub_thread` are now **PM-only**. Non-PM agents receive a clear `STOP` error directing them to use `bridge_submit_deliverable` or `bridge_send_file` instead. Set `"isProjectManager": true` in the PM agent's bridge config to enable.
+- **Worker ProjectManager is Read-Only** — Non-PM agents no longer create `_projects/` directories locally. All project state is centrally managed by PM. This prevents duplicate projects and stale local state.
+
+### New Features
+- **`bridge_submit_deliverable`** — New tool for worker agents to submit final deliverables to PM. Sends the file to PM's `_inbox/` AND registers it as a project asset via relay in one call.
+- **Auto-Asset Registration via `bridge_send_file`** — When a worker sends a file from `_projects/<projectId>/...` to PM, it automatically triggers asset registration. No separate `bridge_submit_deliverable` call needed.
+- **Auto-Thread Creation** — `bridge_project_create` now auto-creates a Discord Thread for each project. `bridge_task_assign` auto-creates isolated sub-threads per task.
+- **Discord Sidebar Visibility** — New `creatorUserId` parameter on `bridge_project_create` and `bridge_create_project_thread`. When provided, the user is auto-added to the thread via Discord API so it appears in their sidebar immediately.
+- **Worker Tools Relay to PM** — `bridge_task_update`, `bridge_task_complete`, `bridge_task_blocked`, `bridge_project_status`, `bridge_asset_list`, and `bridge_asset_get` now route through the PM via relay when called by non-PM agents. All project state reads/writes go through the single PM authority.
+- **PM-Side Relay Handlers** — PM listens for `task_update`, `task_complete`, `task_blocked`, `query_project`, `query_assets`, `query_asset`, and `register_asset` messages. Automatically updates project state and posts to Discord threads.
+- **UUID-Based Project IDs** — Project IDs now use UUID suffixes instead of `Date.now()` timestamps, eliminating any collision risk under concurrent creation.
+- **Anti-Loop STOP Messages** — Tool errors return `"STOP — DO NOT retry"` messages to prevent LLM models from infinite-looping on failed tool calls.
+- **Hard Round Limit Auto-Block** — When a task exceeds its hard round limit (15), PM auto-blocks it with status `stalled` and posts a warning to the project thread.
+- **macOS launchd Fallback** — Process listing and log reading now fall back to launchd when PM2 is unavailable (macOS single-instance setups).
+- **Auto-Config Fixes 6-8** — CLI `doctor --fix` now auto-adds `localManager` from `fileRelay`, auto-detects `discordId` from Discord token, and sets `dmHistoryLimit=0`.
+- **Discord Token Detection Fallback** — Heartbeat now uses the first enabled Discord account when no bindings are configured.
+- **extractChannels Fix** — Fixed channel extraction to parse `guilds.<guildId>.channels.<channelId>` structure (previously always returned `[]`).
+
+### v0.6.0 更新说明
+
+#### 破坏性变更
+- **PM 中心化项目架构** — `bridge_project_create`、`bridge_task_assign`、`bridge_asset_publish` 等 6 个工具现为 PM 专属。非 PM agent 调用会收到 `STOP` 错误提示。PM 的 bridge 配置需设 `"isProjectManager": true`。
+- **Worker ProjectManager 只读** — 非 PM agent 不再在本地创建 `_projects/` 目录，所有项目状态由 PM 统一管理。
+
+#### 新功能
+- **`bridge_submit_deliverable`** — Worker 提交最终交付物给 PM 的新工具，一次调用完成文件传输 + 资产注册。
+- **`bridge_send_file` 自动资产注册** — 发给 PM 的文件如果路径含 `_projects/<projectId>/`，自动触发资产注册。
+- **自动 Thread 创建** — 创建项目时自动建 Discord Thread；分派任务时自动建隔离子线程。
+- **Discord 侧边栏可见** — 支持传入 `creatorUserId`，自动将用户加入 Thread。
+- **Worker 工具 Relay 到 PM** — 6 个 Worker 工具全部改为通过 relay 路由到 PM 执行。
+- **UUID 项目 ID** — 消除并发创建时的 ID 冲突风险。
+- **防死循环 STOP 消息** — 工具错误返回 "STOP" 指令防止 LLM 无限重试。
+- **macOS launchd 回退** — 无 PM2 时自动使用 launchd 获取进程状态和日志。
+- **extractChannels 修复** — 修复 Discord channel 提取始终返回空数组的 bug。
+
+---
+
 ## What's New in v0.5.1
 
 ### Bug Fixes
@@ -142,6 +182,7 @@ The plugin is also loaded by each OpenClaw gateway instance for cross-agent comm
 | Field | Type | Description |
 |-------|------|-------------|
 | `role` | `"normal"` \| `"superuser"` | Agent permission level |
+| `isProjectManager` | boolean | Set `true` on the PM agent only. Enables project creation, task assignment, and relay handlers |
 | `agentId` | string | Unique identifier (e.g., `pm`, `director`) |
 | `agentName` | string | Display name (e.g., `PM Bot`, `Director`) |
 | `description` | string | Short description shown on Hub dashboard |
@@ -182,20 +223,41 @@ The Local Manager handles PM2 process management for your gateway instances. It 
 
 ## Bridge Tools
 
-These tools are available to agents during conversations:
-
+### All Agents
 | Tool | Description |
 |------|-------------|
 | `bridge_discover` | List all online agents |
 | `bridge_whois` | Get details for a specific agent |
-| `bridge_send_file` | Send a file to another agent's inbox |
+| `bridge_send_file` | Send a file to another agent's inbox (auto-registers to PM if path contains `_projects/`) |
 | `bridge_send_message` | Send a message and wait for reply |
 | `bridge_handoff` | Hand off conversation to another agent |
 | `bridge_handoff_end` | End handoff and return to original agent |
 | `bridge_handoff_switch` | Switch handoff to a different agent |
-| `bridge_read_file` | Read a file from any agent's workspace (superuser) |
-| `bridge_write_file` | Write a file to any agent's workspace (superuser) |
-| `bridge_restart` | Restart another gateway (superuser) |
+| `bridge_submit_deliverable` | Submit final deliverable to PM (file + asset registration) |
+| `bridge_task_update` | Post progress update to project thread (relays to PM) |
+| `bridge_task_complete` | Mark task done (relays to PM) |
+| `bridge_task_blocked` | Report blocker (relays to PM) |
+| `bridge_project_status` | Query project state (relays to PM) |
+| `bridge_asset_list` | List project assets (relays to PM) |
+| `bridge_asset_get` | Get asset details (relays to PM) |
+| `bridge_post_to_thread` | Post to a Discord thread |
+
+### PM Only (`isProjectManager: true`)
+| Tool | Description |
+|------|-------------|
+| `bridge_project_create` | Create project + auto-create Discord thread |
+| `bridge_task_assign` | Assign task + auto-create sub-thread |
+| `bridge_task_reassign` | Reroute a blocked task |
+| `bridge_asset_publish` | Direct asset registration |
+| `bridge_create_project_thread` | Standalone thread creation |
+| `bridge_create_sub_thread` | Standalone sub-thread creation |
+
+### Superuser Only
+| Tool | Description |
+|------|-------------|
+| `bridge_read_file` | Read a file from any agent's workspace |
+| `bridge_write_file` | Write a file to any agent's workspace |
+| `bridge_restart` | Restart another gateway |
 
 ## Architecture
 

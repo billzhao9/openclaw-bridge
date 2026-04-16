@@ -103,10 +103,19 @@ export class BridgeHeartbeat {
             const config = JSON.parse(raw);
             // Find this agent's Discord binding
             const binding = config.bindings?.find((b) => b.agentId === this.entry.agentId && b.match.channel === "discord");
-            if (!binding)
-                return;
-            const accountId = binding.match.accountId;
-            const token = config.channels?.discord?.accounts?.[accountId]?.token;
+            let token;
+            if (binding) {
+                const accountId = binding.match.accountId;
+                token = config.channels?.discord?.accounts?.[accountId]?.token;
+            }
+            else {
+                // Fallback: use first enabled Discord account when no bindings configured
+                const accounts = config.channels?.discord?.accounts;
+                if (accounts) {
+                    const firstAccount = Object.values(accounts).find((a) => a.token);
+                    token = firstAccount?.token;
+                }
+            }
             if (!token)
                 return;
             // Extract Discord user ID from token (first segment is base64-encoded user ID)
@@ -137,14 +146,29 @@ export class BridgeHeartbeat {
             if (!accounts || typeof accounts !== "object")
                 return [];
             const result = [];
+            const seen = new Set();
             for (const account of Object.values(accounts)) {
-                if (!Array.isArray(account.channels))
-                    continue;
-                for (const ch of account.channels) {
-                    const channelId = ch.channelId ?? ch.id ?? "";
-                    const name = ch.name ?? channelId;
-                    if (channelId) {
-                        result.push({ type: "discord", channelId, name });
+                // Format 1: guilds.<guildId>.channels.<channelId> (standard openclaw.json)
+                if (account.guilds && typeof account.guilds === "object") {
+                    for (const guild of Object.values(account.guilds)) {
+                        if (guild.channels && typeof guild.channels === "object") {
+                            for (const channelId of Object.keys(guild.channels)) {
+                                if (channelId && !seen.has(channelId)) {
+                                    seen.add(channelId);
+                                    result.push({ type: "discord", channelId, name: channelId });
+                                }
+                            }
+                        }
+                    }
+                }
+                // Format 2: channels array (legacy / alternative format)
+                if (Array.isArray(account.channels)) {
+                    for (const ch of account.channels) {
+                        const channelId = ch.channelId ?? ch.id ?? "";
+                        if (channelId && !seen.has(channelId)) {
+                            seen.add(channelId);
+                            result.push({ type: "discord", channelId, name: ch.name ?? channelId });
+                        }
                     }
                 }
             }

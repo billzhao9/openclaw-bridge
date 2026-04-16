@@ -5,6 +5,8 @@ import {
   existsSync,
   copyFileSync,
 } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
 import { join, basename } from "node:path";
 import type {
   ProjectData,
@@ -33,20 +35,30 @@ function slugify(text: string): string {
 }
 
 function generateId(prefix: string): string {
-  const ts = Date.now().toString(36);
-  const rand = Math.random().toString(36).slice(2, 7);
-  return `${prefix}-${ts}-${rand}`;
+  // UUID v4 without dashes, first 10 chars — enough entropy to avoid collisions
+  const uuid = randomUUID().replace(/-/g, "").slice(0, 10);
+  return `${prefix}-${uuid}`;
 }
 
 export class ProjectManager {
   private baseDir: string;
   private logger: PluginLogger;
+  private readonly readOnly: boolean;
 
-  constructor(workspacePath: string, logger: PluginLogger) {
-    this.baseDir = join(workspacePath, "_projects");
+  constructor(workspacePath: string, logger: PluginLogger, opts: { readOnly?: boolean } = {}) {
+    this.baseDir = join(workspacePath || join(homedir(), ".openclaw"), "_projects");
     this.logger = logger;
-    mkdirSync(this.baseDir, { recursive: true });
-    this.logger.info(`[ProjectManager] base dir: ${this.baseDir}`);
+    this.readOnly = opts.readOnly === true;
+    if (!this.readOnly) {
+      mkdirSync(this.baseDir, { recursive: true });
+      this.logger.info(`[ProjectManager] base dir: ${this.baseDir}`);
+    } else {
+      this.logger.info(`[ProjectManager] running in read-only mode (non-PM agent)`);
+    }
+  }
+
+  isReadOnly(): boolean {
+    return this.readOnly;
   }
 
   // ── Index helpers ────────────────────────────────────────────────────
@@ -85,8 +97,13 @@ export class ProjectManager {
   // ── Project CRUD ─────────────────────────────────────────────────────
 
   createProject(name: string, description: string): ProjectData {
+    if (this.readOnly) {
+      throw new Error("ProjectManager is read-only on this agent — only the PM can create projects");
+    }
     const slug = slugify(name);
-    const id = slug ? `${slug}-${Date.now().toString(36)}` : generateId("proj");
+    // Always append a UUID suffix so same-name projects within one ms never collide
+    const uniq = randomUUID().replace(/-/g, "").slice(0, 10);
+    const id = slug ? `${slug}-${uniq}` : generateId("proj");
 
     const dir = this.getProjectDir(id);
     mkdirSync(join(dir, "assets"), { recursive: true });
@@ -128,6 +145,10 @@ export class ProjectManager {
   }
 
   writeProject(project: ProjectData): void {
+    if (this.readOnly) {
+      this.logger.warn(`[ProjectManager] writeProject ignored (read-only): ${project.id}`);
+      return;
+    }
     const dir = this.getProjectDir(project.id);
     mkdirSync(dir, { recursive: true });
     writeFileSync(this.projectJsonPath(project.id), JSON.stringify(project, null, 2), "utf-8");

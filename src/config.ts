@@ -31,6 +31,7 @@ export function parseConfig(raw: unknown): BridgeConfig {
 
   return {
     role: obj.role as "normal" | "superuser",
+    isProjectManager: obj.isProjectManager === true,
     agentId: obj.agentId as string,
     agentName: obj.agentName as string,
     registry: {

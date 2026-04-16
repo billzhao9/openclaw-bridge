@@ -1,5 +1,5 @@
 import WebSocket from "ws";
-import { hostname } from "node:os";
+import { getMachineId } from "../config.js";
 export class ManagerHubClient {
     hubUrl;
     apiKey;
@@ -14,7 +14,7 @@ export class ManagerHubClient {
         this.hubUrl = hubUrl;
         this.apiKey = apiKey;
         this.managerPass = managerPass;
-        this.machineId = hostname();
+        this.machineId = getMachineId();
         this.logger = logger;
     }
     get connected() {

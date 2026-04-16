@@ -2,7 +2,11 @@ import type { ProjectData, ProjectIndex, TaskData, AssetData, TaskStatus, BlockT
 export declare class ProjectManager {
     private baseDir;
     private logger;
-    constructor(workspacePath: string, logger: PluginLogger);
+    private readonly readOnly;
+    constructor(workspacePath: string, logger: PluginLogger, opts?: {
+        readOnly?: boolean;
+    });
+    isReadOnly(): boolean;
     private indexPath;
     private readIndex;
     private writeIndex;

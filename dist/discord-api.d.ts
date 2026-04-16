@@ -21,4 +21,9 @@ export declare class DiscordApi {
     sendMessage(channelId: string, content: string): Promise<{
         id: string;
     }>;
+    /**
+     * Add a user to a thread so it appears in their Discord sidebar.
+     * Silently ignores errors (user may already be a member, or bot lacks permission).
+     */
+    addThreadMember(threadId: string, userId: string): Promise<boolean>;
 }

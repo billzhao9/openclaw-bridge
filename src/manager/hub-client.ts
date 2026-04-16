@@ -1,5 +1,5 @@
 import WebSocket from "ws";
-import { hostname } from "node:os";
+import { getMachineId } from "../config.js";
 import type { PluginLogger } from "../types.js";
 
 export class ManagerHubClient {
@@ -22,7 +22,7 @@ export class ManagerHubClient {
     this.hubUrl = hubUrl;
     this.apiKey = apiKey;
     this.managerPass = managerPass;
-    this.machineId = hostname();
+    this.machineId = getMachineId();
     this.logger = logger;
   }
 

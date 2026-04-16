@@ -26,6 +26,7 @@ export function parseConfig(raw) {
     }
     return {
         role: obj.role,
+        isProjectManager: obj.isProjectManager === true,
         agentId: obj.agentId,
         agentName: obj.agentName,
         registry: {

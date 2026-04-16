@@ -949,6 +949,57 @@ function checkAndFixBridgeConfig(): number {
         }
       }
 
+      // Fix 6: Auto-add localManager from fileRelay
+      if (!bridgeConfig.localManager && bridgeConfig.fileRelay?.baseUrl) {
+        const relayUrl = bridgeConfig.fileRelay.baseUrl as string;
+        try {
+          const u = new URL(relayUrl);
+          bridgeConfig.localManager = {
+            baseUrl: `${u.protocol}//${u.hostname}:9090`,
+            password: "",
+          };
+          console.log(`  [${configPath}] Added localManager.baseUrl from fileRelay`);
+          changed = true;
+          fixes++;
+        } catch { /* invalid URL */ }
+      }
+
+      // Fix 7: Auto-detect discordId from Discord token
+      const discordAccounts = config.channels?.discord?.accounts;
+      if (discordAccounts && !bridgeConfig.discordId) {
+        const binding = config.bindings?.find(
+          (b: any) => b.agentId === bridgeConfig.agentId && b.match?.channel === "discord",
+        );
+        const accountId = binding?.match?.accountId;
+        const token = accountId
+          ? discordAccounts[accountId]?.token
+          : (Object.values(discordAccounts).find((a: any) => a.token) as any)?.token;
+        if (token) {
+          try {
+            const decoded = Buffer.from(token.split(".")[0], "base64").toString("utf-8");
+            if (/^\d+$/.test(decoded)) {
+              bridgeConfig.discordId = decoded;
+              console.log(`  [${configPath}] Auto-detected discordId: ${decoded}`);
+              changed = true;
+              fixes++;
+            }
+          } catch { /* skip */ }
+        }
+      }
+
+      // Fix 8: Set dmHistoryLimit=0 for Discord accounts
+      if (discordAccounts) {
+        for (const [accId, acc] of Object.entries(discordAccounts)) {
+          const a = acc as Record<string, unknown>;
+          if (a.dmPolicy && a.dmHistoryLimit === undefined) {
+            a.dmHistoryLimit = 0;
+            console.log(`  [${configPath}] Set dmHistoryLimit=0 for discord account "${accId}"`);
+            changed = true;
+            fixes++;
+          }
+        }
+      }
+
       if (changed) {
         writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
       }

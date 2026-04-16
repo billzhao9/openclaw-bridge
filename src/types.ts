@@ -11,6 +11,7 @@ export interface LocalManagerConfig {
 
 export interface BridgeConfig {
   role: "normal" | "superuser";
+  isProjectManager?: boolean;
   agentId: string;
   agentName: string;
   registry: {

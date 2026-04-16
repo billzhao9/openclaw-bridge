@@ -80,6 +80,32 @@ function autoPatchConfig(logger: { info: (...a: any[]) => void; warn: (...a: any
       }
     }
 
+    // 4. Auto-add localManager from fileRelay
+    if (bridgeConfig && !bridgeConfig.localManager && bridgeConfig.fileRelay?.baseUrl) {
+      const relayUrl = bridgeConfig.fileRelay.baseUrl as string;
+      try {
+        const u = new URL(relayUrl);
+        bridgeConfig.localManager = {
+          baseUrl: `${u.protocol}//${u.hostname}:9090`,
+          password: '',
+        };
+        changes.push(`Added localManager.baseUrl = ${u.protocol}//${u.hostname}:9090 (derived from fileRelay)`);
+      } catch { /* invalid URL */ }
+    }
+
+    // 5. Auto-add gateway.auth.token if missing
+    if (!config.gateway?.auth?.token) {
+      config.gateway = config.gateway || {};
+      config.gateway.auth = config.gateway.auth || {};
+      if (!config.gateway.auth.mode) config.gateway.auth.mode = 'token';
+      if (!config.gateway.auth.token) {
+        const agentId = bridgeConfig?.agentId || 'agent';
+        const token = `bridge-${agentId}-${Date.now().toString(36)}`;
+        config.gateway.auth.token = token;
+        changes.push(`Added gateway.auth.token = ${token}`);
+      }
+    }
+
     if (changes.length > 0) {
       writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
       logger.info(`[bridge] Auto-patched openclaw.json (${changes.length} changes):`);
@@ -125,12 +151,29 @@ const bridgePlugin = {
     const restartManager = new BridgeRestart(config, machineId, registry, api.logger);
     const discordApi = new DiscordApi(api.logger);
     discordApi.loadToken();
-    const projectMgr = new ProjectManager(workspacePath, api.logger);
+    const projectMgr = new ProjectManager(workspacePath, api.logger, { readOnly: !config.isProjectManager });
     const circuitBreaker = new CircuitBreaker(projectMgr, api.logger);
 
     let relayClient: MessageRelayClient | null = null;
 
     const offlineThresholdMs = config.offlineThresholdMs ?? 120_000;
+
+    /**
+     * Non-PM agents route project/task/asset operations to PM via relay.
+     * Returns { ok: boolean, ...data } or throws.
+     */
+    async function askPm(type: string, data: Record<string, unknown>, timeoutMs = 20_000, pmAgentId = "pm"): Promise<any> {
+      if (!relayClient?.isConnected) throw new Error("STOP — Message relay not connected. PM is unreachable. Your task output is saved locally — PM will pick it up later. DO NOT retry.");
+      const msgId = `${type}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      try {
+        const reply = await relayClient.sendAndWait({
+          type, id: msgId, from: config.agentId, to: pmAgentId, ...data,
+        }, timeoutMs);
+        return reply;
+      } catch (err: any) {
+        throw new Error(`STOP — PM did not respond in time (${timeoutMs}ms). Your work is saved locally. DO NOT retry — PM will process it when available.`);
+      }
+    }
 
     const entry: RegistryEntry = {
       type: "gateway-registry",
@@ -459,6 +502,170 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
             }
           });
 
+          // PM-side handlers: worker agents route project/task/asset operations here.
+          // All project state lives on PM; workers never touch local _projects/.
+          if (config.isProjectManager) {
+            // Helper: send typed reply for request/response relay messages
+            const replyOk = (msg: any, replyType: string, data: Record<string, unknown>) => {
+              relayClient!.send({ type: replyType, replyTo: msg.id, from: config.agentId, to: msg.from, ok: true, ...data });
+            };
+            const replyErr = (msg: any, replyType: string, error: string) => {
+              relayClient!.send({ type: replyType, replyTo: msg.id, from: config.agentId, to: msg.from, ok: false, error });
+            };
+
+            // Task update: post progress summary to project's main thread.
+            // Also increments round counter — if the task hits its hard round limit,
+            // force-block it so the worker's model stops looping.
+            relayClient.on('task_update', async (msg) => {
+              try {
+                const bumped = projectMgr.incrementRounds(msg.projectId as string, msg.taskId as string);
+                if (!bumped) return replyErr(msg, 'task_update_reply', "Project or task not found");
+                const { task, hardLimit } = bumped as any;
+                const project = projectMgr.readProject(msg.projectId as string);
+                if (project?.threadId && discordApi.isAvailable) {
+                  const agents = await discoverAll(registry, offlineThresholdMs);
+                  const mentionMap = buildMentionMap(agents);
+                  const agentName = agents.find(a => a.agentId === msg.from)?.agentName || msg.from;
+                  const processed = applyMentions(`📊 **${task.title}** (${agentName}): ${msg.summary}`, mentionMap);
+                  await discordApi.sendMessage(project.threadId, processed);
+                  if (hardLimit) {
+                    projectMgr.updateTaskStatus(msg.projectId as string, msg.taskId as string, "blocked",
+                      { blockType: "stalled" as any, blockReason: `Task exceeded hard round limit (${task.rounds})` } as any);
+                    await discordApi.sendMessage(project.threadId,
+                      `⛔ **${task.title}** auto-blocked — hit hard round limit (${task.rounds}). Worker should stop and PM must intervene.`);
+                  }
+                }
+                replyOk(msg, 'task_update_reply', { posted: !!project?.threadId, rounds: task.rounds, hardLimitHit: !!hardLimit });
+              } catch (err: any) { replyErr(msg, 'task_update_reply', err.message); }
+            });
+
+            // Task complete: update task status + outputs
+            relayClient.on('task_complete', async (msg) => {
+              try {
+                const task = projectMgr.updateTaskStatus(
+                  msg.projectId as string, msg.taskId as string, "completed",
+                  { outputs: (msg.outputPaths as string[]) || [] } as any,
+                );
+                if (!task) return replyErr(msg, 'task_complete_reply', "Project or task not found");
+                // Post completion notice to thread
+                const project = projectMgr.readProject(msg.projectId as string);
+                if (project?.threadId && discordApi.isAvailable) {
+                  const agents = await discoverAll(registry, offlineThresholdMs);
+                  const agentName = agents.find(a => a.agentId === msg.from)?.agentName || msg.from;
+                  await discordApi.sendMessage(project.threadId, `✅ **${task.title}** completed by ${agentName}. ${msg.summary || ""}`);
+                }
+                replyOk(msg, 'task_complete_reply', { taskId: task.id, status: "completed" });
+              } catch (err: any) { replyErr(msg, 'task_complete_reply', err.message); }
+            });
+
+            // Task blocked
+            relayClient.on('task_blocked', async (msg) => {
+              try {
+                const task = projectMgr.updateTaskStatus(
+                  msg.projectId as string, msg.taskId as string, "blocked",
+                  { blockType: msg.blockType, blockReason: msg.reason } as any,
+                );
+                if (!task) return replyErr(msg, 'task_blocked_reply', "Project or task not found");
+                const project = projectMgr.readProject(msg.projectId as string);
+                if (project?.threadId && discordApi.isAvailable) {
+                  const agents = await discoverAll(registry, offlineThresholdMs);
+                  const agentName = agents.find(a => a.agentId === msg.from)?.agentName || msg.from;
+                  await discordApi.sendMessage(project.threadId, `⚠️ **${task.title}** blocked by ${agentName} — ${msg.blockType}: ${msg.reason}`);
+                }
+                replyOk(msg, 'task_blocked_reply', { taskId: task.id, status: "blocked", blockType: msg.blockType });
+              } catch (err: any) { replyErr(msg, 'task_blocked_reply', err.message); }
+            });
+
+            // Query project(s)
+            relayClient.on('query_project', async (msg) => {
+              try {
+                if (msg.projectId) {
+                  const project = projectMgr.readProject(msg.projectId as string);
+                  if (!project) return replyErr(msg, 'query_project_reply', `Project "${msg.projectId}" not found`);
+                  return replyOk(msg, 'query_project_reply', { project });
+                }
+                replyOk(msg, 'query_project_reply', { projects: projectMgr.listProjects() });
+              } catch (err: any) { replyErr(msg, 'query_project_reply', err.message); }
+            });
+
+            // Query assets for a project
+            relayClient.on('query_assets', async (msg) => {
+              try {
+                const assets = projectMgr.listAssets(
+                  msg.projectId as string,
+                  msg.type as string | undefined,
+                  msg.agent as string | undefined,
+                );
+                replyOk(msg, 'query_assets_reply', { assets });
+              } catch (err: any) { replyErr(msg, 'query_assets_reply', err.message); }
+            });
+
+            // Query single asset by id or latest of a type
+            relayClient.on('query_asset', async (msg) => {
+              try {
+                const assets = projectMgr.listAssets(msg.projectId as string);
+                let asset: any;
+                if (msg.assetId) asset = assets.find(a => a.id === msg.assetId);
+                else if (msg.assetType) asset = assets.filter(a => a.type === msg.assetType).pop();
+                if (!asset) return replyErr(msg, 'query_asset_reply', "Asset not found");
+                const fullPath = join(projectMgr.getProjectDir(msg.projectId as string), asset.path);
+                replyOk(msg, 'query_asset_reply', { asset: { ...asset, fullPath } });
+              } catch (err: any) { replyErr(msg, 'query_asset_reply', err.message); }
+            });
+
+            relayClient.on('register_asset', async (msg) => {
+              api.logger.info(`[register_asset] from ${msg.from}: project=${msg.projectId} file=${msg.filename}`);
+              try {
+                const inboxPath = join(workspacePath, "_inbox", msg.from as string, msg.filename as string);
+                if (!existsSync(inboxPath)) {
+                  throw new Error(`inbox file not found: ${inboxPath}`);
+                }
+                const asset = projectMgr.publishAsset(
+                  msg.projectId as string,
+                  inboxPath,
+                  (msg.assetType as string) || "deliverable",
+                  (msg.description as string) || "",
+                  msg.from as string,
+                  (msg.taskId as string) || "",
+                );
+                if (!asset) {
+                  relayClient!.send({
+                    type: 'register_asset_reply',
+                    replyTo: msg.id,
+                    from: config.agentId,
+                    to: msg.from,
+                    ok: false,
+                    error: `Project "${msg.projectId}" not found in PM workspace`,
+                  });
+                  return;
+                }
+                // Auto-mark task complete if taskId provided
+                if (msg.taskId) {
+                  projectMgr.updateTaskStatus(msg.projectId as string, msg.taskId as string, "completed");
+                }
+                relayClient!.send({
+                  type: 'register_asset_reply',
+                  replyTo: msg.id,
+                  from: config.agentId,
+                  to: msg.from,
+                  ok: true,
+                  assetId: asset.id,
+                  assetPath: asset.path,
+                });
+              } catch (err: any) {
+                api.logger.error(`[register_asset] failed: ${err.message}`);
+                relayClient!.send({
+                  type: 'register_asset_reply',
+                  replyTo: msg.id,
+                  from: config.agentId,
+                  to: msg.from,
+                  ok: false,
+                  error: err.message,
+                });
+              }
+            });
+          }
+
           // Handle errors from hub
           relayClient.on('error', (msg) => {
             api.logger.error(`Hub error: [${msg.code}] ${msg.message}`);
@@ -468,7 +675,7 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
           });
         }
 
-        api.logger.info(`openclaw-bridge: initialized (${config.agentId}, role=${config.role})`);
+        api.logger.info(`openclaw-bridge: initialized (${config.agentId}, role=${config.role}${config.isProjectManager ? ", isPM=true" : ""})`);
       },
       async stop() {
         if (localManager) {
@@ -561,12 +768,14 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
       name: "bridge_send_file",
       label: "Bridge Send File",
       description:
-        "Send a file to another agent's _inbox/. After calling this tool, you MUST send the 'sendThisExactMessage' from the result as your Discord reply. Do not rephrase it.",
+        "Send a file to another agent's _inbox/. Use this for intermediate peer collaboration files. NOTE: If you send a file from a `_projects/<projectId>/` path to the PM, this tool will AUTOMATICALLY register the file as a project asset (same as bridge_submit_deliverable) — you don't need a second call. For standalone final deliverables outside a project dir, use bridge_submit_deliverable. After calling, you MUST send the 'sendThisExactMessage' from the result as your Discord reply.",
       parameters: Type.Object({
         targetAgentId: Type.String({ description: "Target agent ID" }),
         localPath: Type.String({
-          description: "Relative path within your workspace (e.g., output/task_005.md)",
+          description: "Relative path within your workspace (e.g., output/task_005.md or _projects/foo-1234/ep0/_docs/script_v1.md)",
         }),
+        taskId: Type.Optional(Type.String({ description: "Task ID if this is a task deliverable (used for auto-registration when target is PM)" })),
+        assetType: Type.Optional(Type.String({ description: "Asset type override (script, storyboard, brief, img, video, ...). Auto-inferred from path if omitted." })),
       }),
       async execute(_id, params) {
         assertPermission("send_file", config);
@@ -579,18 +788,61 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
           delivered: boolean; message: string; filename?: string; renamed?: boolean;
         };
         const mention = target.discordId ? `<@${target.discordId}>` : target.agentName;
-        const originalName = (params.localPath as string).split("/").pop()!;
+        const localPath = params.localPath as string;
+        const originalName = localPath.split(/[\\/]/).pop()!;
         const actualName = result.filename ?? originalName;
         const wasRenamed = result.renamed === true;
 
-        // Return clear instruction for the LLM
+        // Auto-register as project asset when the target is the PM and the file lives under _projects/<projectId>/
+        let autoRegistered: { ok: boolean; assetId?: string; error?: string } | null = null;
+        const isPmTarget = (params.targetAgentId as string) === "pm";
+        const projectMatch = localPath.match(/_projects[\\/]([^\\/]+)[\\/]/);
+        if (isPmTarget && projectMatch && relayClient?.isConnected) {
+          const projectId = projectMatch[1];
+          // Infer assetType from path if not provided
+          let assetType = (params.assetType as string) || "deliverable";
+          if (!params.assetType) {
+            const lower = localPath.toLowerCase();
+            if (lower.includes("/_briefs/") || lower.includes("\\_briefs\\")) assetType = "brief";
+            else if (lower.includes("storyboard")) assetType = "storyboard";
+            else if (lower.includes("script")) assetType = "script";
+            else if (lower.includes("outline")) assetType = "outline";
+            else if (lower.match(/\.(jpg|jpeg|png|webp|gif)$/)) assetType = "img";
+            else if (lower.match(/\.(mp4|mov|webm)$/)) assetType = "video";
+          }
+          const msgId = `auto_register_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          try {
+            const reply = await relayClient.sendAndWait({
+              type: 'register_asset',
+              id: msgId,
+              from: config.agentId,
+              to: params.targetAgentId as string,
+              projectId,
+              filename: actualName,
+              assetType,
+              description: `Auto-registered from bridge_send_file: ${originalName}`,
+              taskId: (params.taskId as string) || "",
+            }, 20_000) as { ok: boolean; assetId?: string; error?: string };
+            autoRegistered = reply;
+          } catch (err: any) {
+            autoRegistered = { ok: false, error: err.message };
+          }
+        }
+
         const renameNote = wasRenamed ? ` ⚠️ (renamed from "${originalName}" — duplicate existed)` : "";
+        const registerNote = autoRegistered?.ok
+          ? ` Registered as project asset ${autoRegistered.assetId}.`
+          : autoRegistered && !autoRegistered.ok
+            ? ` (Auto-registration to PM failed: ${autoRegistered.error})`
+            : "";
 
         return {
           success: true,
           filename: actualName,
           renamed: wasRenamed,
-          sendThisExactMessage: `${mention} Sent you a file: ${actualName}${renameNote}, it's in your _inbox/ directory, please check.`,
+          autoRegistered: autoRegistered?.ok === true,
+          assetId: autoRegistered?.assetId,
+          sendThisExactMessage: `${mention} Sent you a file: ${actualName}${renameNote}, it's in your _inbox/ directory, please check.${registerNote}`,
         };
       },
     });
@@ -771,12 +1023,14 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
     api.registerTool({
       name: "bridge_create_project_thread",
       label: "Bridge Create Project Thread",
-      description: "Create a Discord Thread for a project in the current channel. Returns threadId.",
+      description: "Create a Discord Thread for a project in the current channel. Auto-adds agent bots + the optional creator user so the thread appears in their Discord sidebar. Returns threadId.",
       parameters: Type.Object({
         projectName: Type.String({ description: "Project name for the thread title" }),
-        agentIds: Type.Array(Type.String(), { description: "Agent IDs to mention in kickoff message" }),
+        agentIds: Type.Array(Type.String(), { description: "Agent IDs to add to the thread" }),
+        creatorUserId: Type.Optional(Type.String({ description: "Discord user ID of the human who requested the project — auto-added so thread shows in their sidebar" })),
       }),
       async execute(_id, params) {
+        assertPermission("create_project_thread", config);
         if (!discordApi.isAvailable) return { error: "Discord API not available — no bot token configured" };
         const projectName = params.projectName as string;
         const agentIds = params.agentIds as string[];
@@ -785,18 +1039,25 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
         if (!discordChannel) return { error: "No Discord channel configured for this agent" };
 
         const agents = await discoverAll(registry, offlineThresholdMs);
-        const mentions = agentIds
+        const hits = agentIds
           .map(id => agents.find(a => a.agentId === id))
-          .filter(Boolean)
-          .map(a => a!.discordId ? `<@${a!.discordId}>` : a!.agentName)
-          .join(" ");
+          .filter(Boolean) as any[];
+        const mentions = hits.map(a => a.discordId ? `<@${a.discordId}>` : a.agentName).join(" ");
 
         const thread = await discordApi.createThread(
           discordChannel.channelId,
           `🎬 ${projectName} — PM Managed`.substring(0, 100),
           `📋 **Project: ${projectName}**\n\nTeam: ${mentions}\n\nProject thread created. Updates will be posted here.`,
         );
-        return { threadId: thread.id, threadName: thread.name };
+        // Auto-add agents + creator to thread so it shows in sidebar
+        const toAdd = new Set<string>();
+        for (const a of hits) if (a.discordId) toAdd.add(a.discordId);
+        if (params.creatorUserId) toAdd.add(params.creatorUserId as string);
+        const added: string[] = [];
+        for (const uid of toAdd) {
+          if (await discordApi.addThreadMember(thread.id, uid)) added.push(uid);
+        }
+        return { threadId: thread.id, threadName: thread.name, threadMembersAdded: added };
       },
     });
 
@@ -810,6 +1071,7 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
         taskTitle: Type.String({ description: "Brief task title" }),
       }),
       async execute(_id, params) {
+        assertPermission("create_sub_thread", config);
         if (!discordApi.isAvailable) return { error: "Discord API not available" };
         const discordChannel = entry.channels.find(c => c.type === "discord");
         if (!discordChannel) return { error: "No Discord channel configured" };
@@ -859,25 +1121,88 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
     api.registerTool({
       name: "bridge_project_create",
       label: "Bridge Project Create",
-      description: "Initialize a new project with directory structure and state tracking.",
+      description: "Initialize a new project with directory structure, state tracking, and auto-create a Discord Thread for visibility. The triggering user + all assigned agents are auto-added to the thread so it appears in their Discord sidebar.",
       parameters: Type.Object({
         name: Type.String({ description: "Project name" }),
         description: Type.String({ description: "Brief project description" }),
+        agentIds: Type.Optional(Type.Array(Type.String(), { description: "Agent IDs assigned to this project — they'll be auto-added to the thread" })),
+        creatorUserId: Type.Optional(Type.String({ description: "Discord user ID of the human who requested the project — they'll be auto-added to the thread so it appears in their sidebar" })),
       }),
       async execute(_id, params) {
+        assertPermission("project_create", config);
         const project = projectMgr.createProject(params.name as string, params.description as string);
-        return { projectId: project.id, projectDir: projectMgr.getProjectDir(project.id) };
+        if (params.creatorUserId) {
+          (project as any).creatorUserId = params.creatorUserId as string;
+          projectMgr.writeProject(project);
+        }
+        const result: Record<string, unknown> = {
+          projectId: project.id,
+          projectDir: projectMgr.getProjectDir(project.id),
+        };
+
+        // Auto-create Discord Thread for project visibility
+        if (discordApi.isAvailable) {
+          const discordChannel = entry.channels.find(c => c.type === "discord");
+          if (discordChannel) {
+            try {
+              const agentIds = (params.agentIds as string[]) || [];
+              const agents = await discoverAll(registry, offlineThresholdMs);
+              const agentDiscordIds: string[] = [];
+              let mentions = "(team will be assigned via tasks)";
+              if (agentIds.length > 0) {
+                const hits = agentIds
+                  .map(id => agents.find(a => a.agentId === id))
+                  .filter(Boolean) as any[];
+                for (const a of hits) {
+                  if (a.discordId) agentDiscordIds.push(a.discordId);
+                }
+                mentions = hits
+                  .map(a => a.discordId ? `<@${a.discordId}>` : a.agentName)
+                  .join(" ") || mentions;
+              }
+              const thread = await discordApi.createThread(
+                discordChannel.channelId,
+                `🎬 ${params.name as string} — PM Managed`.substring(0, 100),
+                `📋 **Project: ${params.name as string}**\n\n${params.description as string}\n\nTeam: ${mentions}\n\nProject thread created. All updates will be posted here.`,
+              );
+              project.threadId = thread.id;
+              projectMgr.writeProject(project);
+              result.threadId = thread.id;
+              result.threadName = thread.name;
+
+              // Auto-add creator + all participating agents so thread shows in sidebar
+              const added: string[] = [];
+              const toAdd = new Set<string>(agentDiscordIds);
+              if (params.creatorUserId) toAdd.add(params.creatorUserId as string);
+              for (const uid of toAdd) {
+                if (await discordApi.addThreadMember(thread.id, uid)) added.push(uid);
+              }
+              result.threadMembersAdded = added;
+            } catch (err) {
+              result.threadError = String(err);
+            }
+          }
+        }
+
+        return result;
       },
     });
 
     api.registerTool({
       name: "bridge_project_status",
       label: "Bridge Project Status",
-      description: "Get project status. Omit projectId to see all active projects.",
+      description: "Get project status. Omit projectId to see all active projects. Routes through PM for non-PM agents.",
       parameters: Type.Object({
         projectId: Type.Optional(Type.String({ description: "Project ID (omit for global overview)" })),
       }),
       async execute(_id, params) {
+        if (!config.isProjectManager) {
+          try {
+            const reply = await askPm('query_project', { projectId: params.projectId });
+            if (!reply.ok) return { error: reply.error };
+            return reply.project ? { project: reply.project } : { projects: reply.projects };
+          } catch (err: any) { return { error: err.message }; }
+        }
         if (params.projectId) {
           const project = projectMgr.readProject(params.projectId as string);
           if (!project) return { error: `Project "${params.projectId}" not found` };
@@ -892,7 +1217,7 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
     api.registerTool({
       name: "bridge_task_assign",
       label: "Bridge Task Assign",
-      description: "Assign a task to an agent within a project. Sends the brief via Bridge Hub.",
+      description: "Assign a task to an agent within a project. Sends the brief via Bridge Hub and auto-creates an isolated sub-thread for the agent.",
       parameters: Type.Object({
         projectId: Type.String({ description: "Project ID" }),
         agentId: Type.String({ description: "Agent to assign to" }),
@@ -901,6 +1226,7 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
         dependencies: Type.Optional(Type.Array(Type.String(), { description: "Task IDs that must complete first" })),
       }),
       async execute(_id, params) {
+        assertPermission("task_assign", config);
         const task = projectMgr.addTask(
           params.projectId as string,
           params.agentId as string,
@@ -912,6 +1238,38 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
 
         const ready = task.dependencies.length === 0 ||
           projectMgr.getReadyTasks(params.projectId as string).some(t => t.id === task.id);
+
+        // Auto-create isolated sub-thread for this agent's task, and add agent + creator so it shows in sidebar
+        let subThreadId: string | null = null;
+        if (discordApi.isAvailable) {
+          const discordChannel = entry.channels.find(c => c.type === "discord");
+          if (discordChannel) {
+            try {
+              const agents = await discoverAll(registry, offlineThresholdMs);
+              const agent = agents.find(a => a.agentId === params.agentId);
+              const agentName = agent?.agentName || (params.agentId as string);
+              const thread = await discordApi.createThread(
+                discordChannel.channelId,
+                `📋 ${agentName} — ${params.title as string}`.substring(0, 100),
+              );
+              subThreadId = thread.id;
+              const project = projectMgr.readProject(params.projectId as string);
+              if (project) {
+                const t = project.tasks.find(x => x.id === task.id);
+                if (t) t.subThreadId = thread.id;
+                projectMgr.writeProject(project);
+              }
+              // Auto-add assigned agent + project creator (if stored) to sub-thread
+              const toAdd = new Set<string>();
+              if (agent?.discordId) toAdd.add(agent.discordId);
+              const creator = (project as any)?.creatorUserId as string | undefined;
+              if (creator) toAdd.add(creator);
+              for (const uid of toAdd) {
+                await discordApi.addThreadMember(thread.id, uid);
+              }
+            } catch { /* fall through, sub-thread optional */ }
+          }
+        }
 
         if (ready) {
           projectMgr.updateTaskStatus(params.projectId as string, task.id, "in_progress");
@@ -929,7 +1287,7 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
           }
         }
 
-        return { taskId: task.id, status: ready ? "in_progress" : "pending" };
+        return { taskId: task.id, status: ready ? "in_progress" : "pending", subThreadId };
       },
     });
 
@@ -958,28 +1316,32 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
     api.registerTool({
       name: "bridge_task_update",
       label: "Bridge Task Update",
-      description: "Post a progress update / thinking summary to the project's main Thread.",
+      description: "Post a progress update / thinking summary to the project's main Thread. Routes through PM for non-PM agents.",
       parameters: Type.Object({
         projectId: Type.String({ description: "Project ID" }),
         taskId: Type.String({ description: "Task ID" }),
         summary: Type.String({ description: "Progress summary" }),
       }),
       async execute(_id, params) {
+        if (!config.isProjectManager) {
+          try {
+            const reply = await askPm('task_update', {
+              projectId: params.projectId, taskId: params.taskId, summary: params.summary,
+            });
+            return reply.ok ? { success: true, posted: reply.posted } : { error: reply.error };
+          } catch (err: any) { return { error: err.message }; }
+        }
+        // PM-local path
         const project = projectMgr.readProject(params.projectId as string);
         if (!project) return { error: "Project not found" };
         const task = project.tasks.find(t => t.id === params.taskId);
         if (!task) return { error: "Task not found" };
-
         if (project.threadId && discordApi.isAvailable) {
           const agents = await discoverAll(registry, offlineThresholdMs);
           const mentionMap = buildMentionMap(agents);
-          const processed = applyMentions(
-            `📊 **${task.title}** (${config.agentName}): ${params.summary}`,
-            mentionMap,
-          );
+          const processed = applyMentions(`📊 **${task.title}** (${config.agentName}): ${params.summary}`, mentionMap);
           await discordApi.sendMessage(project.threadId, processed);
         }
-
         return { success: true };
       },
     });
@@ -987,7 +1349,7 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
     api.registerTool({
       name: "bridge_task_complete",
       label: "Bridge Task Complete",
-      description: "Mark a task as completed with summary and output paths.",
+      description: "Mark a task as completed with summary and output paths. Routes through PM for non-PM agents.",
       parameters: Type.Object({
         projectId: Type.String({ description: "Project ID" }),
         taskId: Type.String({ description: "Task ID" }),
@@ -996,24 +1358,19 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
       }),
       async execute(_id, params) {
         const outputs = (params.outputPaths as string[]) || [];
+        if (!config.isProjectManager) {
+          try {
+            const reply = await askPm('task_complete', {
+              projectId: params.projectId, taskId: params.taskId,
+              summary: params.summary, outputPaths: outputs,
+            });
+            return reply.ok ? { taskId: reply.taskId, status: reply.status, outputs } : { error: reply.error };
+          } catch (err: any) { return { error: err.message }; }
+        }
         const task = projectMgr.updateTaskStatus(
-          params.projectId as string,
-          params.taskId as string,
-          "completed",
-          { outputs },
+          params.projectId as string, params.taskId as string, "completed", { outputs } as any,
         );
         if (!task) return { error: "Task or project not found" };
-
-        if (relayClient?.isConnected && config.agentId !== "pm") {
-          relayClient.send({
-            type: "message",
-            id: `complete_${Date.now()}`,
-            from: config.agentId,
-            to: "pm",
-            payload: `[Task Complete] Project: ${params.projectId}, Task: ${params.taskId}. ${params.summary}`,
-          });
-        }
-
         return { taskId: task.id, status: "completed", outputs };
       },
     });
@@ -1021,7 +1378,7 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
     api.registerTool({
       name: "bridge_task_blocked",
       label: "Bridge Task Blocked",
-      description: "Report that a task is blocked. Types: capability_missing, dependency_failed, clarification_needed.",
+      description: "Report that a task is blocked. Types: capability_missing, dependency_failed, clarification_needed. Routes through PM for non-PM agents.",
       parameters: Type.Object({
         projectId: Type.String({ description: "Project ID" }),
         taskId: Type.String({ description: "Task ID" }),
@@ -1029,24 +1386,20 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
         reason: Type.String({ description: "Detailed blocker explanation" }),
       }),
       async execute(_id, params) {
+        if (!config.isProjectManager) {
+          try {
+            const reply = await askPm('task_blocked', {
+              projectId: params.projectId, taskId: params.taskId,
+              blockType: params.blockType, reason: params.reason,
+            });
+            return reply.ok ? { taskId: reply.taskId, status: reply.status, blockType: reply.blockType } : { error: reply.error };
+          } catch (err: any) { return { error: err.message }; }
+        }
         const task = projectMgr.updateTaskStatus(
-          params.projectId as string,
-          params.taskId as string,
-          "blocked",
+          params.projectId as string, params.taskId as string, "blocked",
           { blockType: params.blockType as any, blockReason: params.reason as string },
         );
         if (!task) return { error: "Task or project not found" };
-
-        if (relayClient?.isConnected && config.agentId !== "pm") {
-          relayClient.send({
-            type: "message",
-            id: `blocked_${Date.now()}`,
-            from: config.agentId,
-            to: "pm",
-            payload: `[Task Blocked] Project: ${params.projectId}, Task: ${params.taskId}, Type: ${params.blockType}. ${params.reason}`,
-          });
-        }
-
         return { taskId: task.id, status: "blocked", blockType: params.blockType };
       },
     });
@@ -1054,9 +1407,65 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
     // ── Asset Management Tools ───────────────────────────────────────
 
     api.registerTool({
+      name: "bridge_submit_deliverable",
+      label: "Bridge Submit Deliverable",
+      description: "Submit a final deliverable file to the PM for central project asset management. Use this instead of bridge_asset_publish — only PM can publish assets directly. This sends the file to PM's _inbox AND registers it in the project. After calling, you MUST post the returned 'sendThisExactMessage' to Discord.",
+      parameters: Type.Object({
+        projectId: Type.String({ description: "PM's project ID (from your task brief)" }),
+        filePath: Type.String({ description: "Local path in your workspace to the deliverable file" }),
+        assetType: Type.String({ description: "Asset type: script, storyboard, direction-brief, video, etc." }),
+        description: Type.String({ description: "Brief description of the deliverable" }),
+        taskId: Type.String({ description: "Task ID that produced this asset" }),
+        pmAgentId: Type.Optional(Type.String({ description: "PM agent ID (defaults to 'pm')" })),
+      }),
+      async execute(_id, params) {
+        assertPermission("submit_deliverable", config);
+        const pmId = (params.pmAgentId as string) || "pm";
+        const pm = await registry.findAgent(pmId, offlineThresholdMs);
+        if (!pm) return { error: `PM agent "${pmId}" not found online. Use bridge_discover to see available PMs.` };
+
+        // Step 1: send the file to PM's _inbox/<myAgentId>/
+        const sendResult = await fileOps.sendFile(pm, params.filePath as string) as {
+          delivered: boolean; filename?: string; renamed?: boolean;
+        };
+        if (!sendResult.delivered) return { error: "File transfer to PM failed" };
+        const filename = sendResult.filename ?? (params.filePath as string).split(/[\\/]/).pop()!;
+
+        // Step 2: send register_asset message and wait for PM to process
+        if (!relayClient?.isConnected) return { error: "Message relay not connected; cannot notify PM" };
+        const msgId = `register_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        try {
+          const reply = await relayClient.sendAndWait({
+            type: 'register_asset',
+            id: msgId,
+            from: config.agentId,
+            to: pmId,
+            projectId: params.projectId as string,
+            filename,
+            assetType: params.assetType as string,
+            description: params.description as string,
+            taskId: params.taskId as string,
+          }, 30_000) as { ok: boolean; assetId?: string; assetPath?: string; error?: string };
+
+          if (!reply.ok) return { error: `PM rejected asset: ${reply.error}` };
+
+          const mention = pm.discordId ? `<@${pm.discordId}>` : pm.agentName;
+          return {
+            success: true,
+            assetId: reply.assetId,
+            assetPath: reply.assetPath,
+            sendThisExactMessage: `${mention} Deliverable submitted: ${filename} (task ${params.taskId}, type ${params.assetType}). Registered as ${reply.assetId}.`,
+          };
+        } catch (err: any) {
+          return { error: `Failed to register with PM: ${err.message}` };
+        }
+      },
+    });
+
+    api.registerTool({
       name: "bridge_asset_publish",
       label: "Bridge Asset Publish",
-      description: "Publish an output asset to the project's asset directory.",
+      description: "PM only: publish an output asset directly to the project's asset directory. Non-PM agents should use bridge_submit_deliverable instead.",
       parameters: Type.Object({
         projectId: Type.String({ description: "Project ID" }),
         filePath: Type.String({ description: "Path to file (relative to workspace)" }),
@@ -1065,6 +1474,7 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
         taskId: Type.String({ description: "Task ID that produced this asset" }),
       }),
       async execute(_id, params) {
+        assertPermission("asset_publish", config);
         const fullPath = join(workspacePath, params.filePath as string);
         const asset = projectMgr.publishAsset(
           params.projectId as string,
@@ -1082,13 +1492,21 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
     api.registerTool({
       name: "bridge_asset_list",
       label: "Bridge Asset List",
-      description: "List all assets in a project, optionally filtered.",
+      description: "List all assets in a project, optionally filtered. Routes through PM for non-PM agents.",
       parameters: Type.Object({
         projectId: Type.String({ description: "Project ID" }),
         type: Type.Optional(Type.String({ description: "Filter by asset type" })),
         agent: Type.Optional(Type.String({ description: "Filter by producer agent ID" })),
       }),
       async execute(_id, params) {
+        if (!config.isProjectManager) {
+          try {
+            const reply = await askPm('query_assets', {
+              projectId: params.projectId, type: params.type, agent: params.agent,
+            });
+            return reply.ok ? { assets: reply.assets } : { error: reply.error };
+          } catch (err: any) { return { error: err.message }; }
+        }
         const assets = projectMgr.listAssets(
           params.projectId as string,
           params.type as string | undefined,
@@ -1101,13 +1519,21 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
     api.registerTool({
       name: "bridge_asset_get",
       label: "Bridge Asset Get",
-      description: "Get the full path and metadata of a specific asset.",
+      description: "Get the full path and metadata of a specific asset. Routes through PM for non-PM agents.",
       parameters: Type.Object({
         projectId: Type.String({ description: "Project ID" }),
         assetId: Type.Optional(Type.String({ description: "Asset ID" })),
         assetType: Type.Optional(Type.String({ description: "Asset type to find latest of" })),
       }),
       async execute(_id, params) {
+        if (!config.isProjectManager) {
+          try {
+            const reply = await askPm('query_asset', {
+              projectId: params.projectId, assetId: params.assetId, assetType: params.assetType,
+            });
+            return reply.ok ? reply.asset : { error: reply.error };
+          } catch (err: any) { return { error: err.message }; }
+        }
         const assets = projectMgr.listAssets(params.projectId as string);
         let asset: any;
         if (params.assetId) {

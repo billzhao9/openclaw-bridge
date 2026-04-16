@@ -80,4 +80,18 @@ export class DiscordApi {
         });
         return { id: msg.id };
     }
+    /**
+     * Add a user to a thread so it appears in their Discord sidebar.
+     * Silently ignores errors (user may already be a member, or bot lacks permission).
+     */
+    async addThreadMember(threadId, userId) {
+        try {
+            await this.request("PUT", `/channels/${threadId}/thread-members/${userId}`);
+            return true;
+        }
+        catch (err) {
+            this.logger.warn(`[discord-api] addThreadMember failed thread=${threadId} user=${userId}: ${err.message}`);
+            return false;
+        }
+    }
 }
