@@ -1148,29 +1148,40 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
                 return { success: true };
             },
         });
+        // bridge_post_file: upload any file (images, scripts, docs) to a Discord thread/channel
+        const postFileExecute = async (_id, params) => {
+            if (!discordApi.isAvailable)
+                return { error: "Discord API not available" };
+            const fullPath = join(workspacePath, params.filePath);
+            if (!existsSync(fullPath))
+                return { error: `File not found: ${params.filePath}` };
+            try {
+                const msg = await discordApi.sendMessageWithFile(params.channelOrThreadId, fullPath, params.caption || undefined);
+                return { success: true, messageId: msg.id };
+            }
+            catch (err) {
+                return { error: err.message };
+            }
+        };
+        const postFileParams = Type.Object({
+            channelOrThreadId: Type.String({ description: "Discord Channel or Thread ID to post to" }),
+            filePath: Type.String({ description: "Local path to the file (relative to workspace) — images, scripts, docs, videos all supported" }),
+            caption: Type.Optional(Type.String({ description: "Optional text caption (e.g. 'Shot 1 — hero portrait' or 'Final script v1')" })),
+        });
+        api.registerTool({
+            name: "bridge_post_file",
+            label: "Bridge Post File",
+            description: "Upload any file (image, script, document, video) to a Discord Thread or Channel. Users can preview images and download files directly from Discord. Use this to share your work visibly in the project thread.",
+            parameters: postFileParams,
+            async execute(_id, params) { return postFileExecute(_id, params); },
+        });
+        // Keep bridge_post_image as alias for backward compatibility
         api.registerTool({
             name: "bridge_post_image",
             label: "Bridge Post Image",
-            description: "Post an image file to a Discord Thread or Channel with optional caption. Use this to show generated images to the team in a thread.",
-            parameters: Type.Object({
-                channelOrThreadId: Type.String({ description: "Discord Channel or Thread ID to post to" }),
-                filePath: Type.String({ description: "Local path to the image file (relative to workspace)" }),
-                caption: Type.Optional(Type.String({ description: "Optional text caption to include with the image" })),
-            }),
-            async execute(_id, params) {
-                if (!discordApi.isAvailable)
-                    return { error: "Discord API not available" };
-                const fullPath = join(workspacePath, params.filePath);
-                if (!existsSync(fullPath))
-                    return { error: `File not found: ${params.filePath}` };
-                try {
-                    const msg = await discordApi.sendMessageWithFile(params.channelOrThreadId, fullPath, params.caption || undefined);
-                    return { success: true, messageId: msg.id };
-                }
-                catch (err) {
-                    return { error: err.message };
-                }
-            },
+            description: "Post an image to a Discord Thread (alias for bridge_post_file). Supports PNG, JPG, and other image formats.",
+            parameters: postFileParams,
+            async execute(_id, params) { return postFileExecute(_id, params); },
         });
         // ── Project Management Tools ─────────────────────────────────────
         api.registerTool({
