@@ -22,6 +22,13 @@ export declare class DiscordApi {
         id: string;
     }>;
     /**
+     * Send a message with a file attachment to a channel or thread.
+     * Uses multipart/form-data to upload the file directly to Discord.
+     */
+    sendMessageWithFile(channelId: string, filePath: string, content?: string): Promise<{
+        id: string;
+    }>;
+    /**
      * Add a user to a thread so it appears in their Discord sidebar.
      * Silently ignores errors (user may already be a member, or bot lacks permission).
      */

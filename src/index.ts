@@ -1210,6 +1210,32 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
       },
     });
 
+    api.registerTool({
+      name: "bridge_post_image",
+      label: "Bridge Post Image",
+      description: "Post an image file to a Discord Thread or Channel with optional caption. Use this to show generated images to the team in a thread.",
+      parameters: Type.Object({
+        channelOrThreadId: Type.String({ description: "Discord Channel or Thread ID to post to" }),
+        filePath: Type.String({ description: "Local path to the image file (relative to workspace)" }),
+        caption: Type.Optional(Type.String({ description: "Optional text caption to include with the image" })),
+      }),
+      async execute(_id, params) {
+        if (!discordApi.isAvailable) return { error: "Discord API not available" };
+        const fullPath = join(workspacePath, params.filePath as string);
+        if (!existsSync(fullPath)) return { error: `File not found: ${params.filePath}` };
+        try {
+          const msg = await discordApi.sendMessageWithFile(
+            params.channelOrThreadId as string,
+            fullPath,
+            (params.caption as string) || undefined,
+          );
+          return { success: true, messageId: msg.id };
+        } catch (err: any) {
+          return { error: err.message };
+        }
+      },
+    });
+
     // ── Project Management Tools ─────────────────────────────────────
 
     api.registerTool({

@@ -89,6 +89,60 @@ export class DiscordApi {
   }
 
   /**
+   * Send a message with a file attachment to a channel or thread.
+   * Uses multipart/form-data to upload the file directly to Discord.
+   */
+  async sendMessageWithFile(channelId: string, filePath: string, content?: string): Promise<{ id: string }> {
+    if (!this.token) throw new Error("Discord API not available — no bot token");
+    if (!existsSync(filePath)) throw new Error(`File not found: ${filePath}`);
+
+    const fileData = readFileSync(filePath);
+    const fileName = filePath.split(/[\\/]/).pop() || "file";
+
+    // Build multipart/form-data manually
+    const boundary = `----BridgeUpload${Date.now()}`;
+    const parts: Buffer[] = [];
+
+    // JSON payload part (message content)
+    if (content) {
+      parts.push(Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${JSON.stringify({ content: content.substring(0, 2000) })}\r\n`
+      ));
+    }
+
+    // File part
+    const mimeType = fileName.endsWith(".png") ? "image/png"
+      : fileName.endsWith(".jpg") || fileName.endsWith(".jpeg") ? "image/jpeg"
+      : fileName.endsWith(".mp4") ? "video/mp4"
+      : "application/octet-stream";
+    parts.push(Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="files[0]"; filename="${fileName}"\r\nContent-Type: ${mimeType}\r\n\r\n`
+    ));
+    parts.push(fileData);
+    parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+
+    const body = Buffer.concat(parts);
+
+    const res = await fetch(`${DISCORD_API}/channels/${channelId}/messages`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bot ${this.token}`,
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      },
+      body,
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Discord file upload failed: ${res.status} ${text.substring(0, 200)}`);
+    }
+
+    const msg = await res.json() as any;
+    this.logger.info(`[discord-api] File sent to ${channelId}: ${fileName} (${(fileData.length / 1024).toFixed(0)} KB)`);
+    return { id: msg.id };
+  }
+
+  /**
    * Add a user to a thread so it appears in their Discord sidebar.
    * Silently ignores errors (user may already be a member, or bot lacks permission).
    */
