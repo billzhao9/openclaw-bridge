@@ -1443,6 +1443,20 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
                     return { error: "Failed to create task — project not found" };
                 const ready = task.dependencies.length === 0 ||
                     projectMgr.getReadyTasks(params.projectId).some(t => t.id === task.id);
+                // Auto-add assigned agent to the project's main thread (so Discord resolves mentions)
+                if (discordApi.isAvailable) {
+                    try {
+                        const project = projectMgr.readProject(params.projectId);
+                        if (project?.threadId) {
+                            const agents = await discoverAll(registry, offlineThresholdMs);
+                            const agent = agents.find(a => a.agentId === params.agentId);
+                            if (agent?.discordId) {
+                                await discordApi.addThreadMember(project.threadId, agent.discordId);
+                            }
+                        }
+                    }
+                    catch { /* best-effort */ }
+                }
                 if (ready) {
                     projectMgr.updateTaskStatus(params.projectId, task.id, "in_progress");
                     if (relayClient?.isConnected) {
