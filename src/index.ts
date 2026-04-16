@@ -1255,10 +1255,18 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
       parameters: Type.Object({
         projectName: Type.String({ description: "Project name for the thread title" }),
         agentIds: Type.Array(Type.String(), { description: "Agent IDs to add to the thread" }),
+        projectId: Type.Optional(Type.String({ description: "Project ID — if the project already has a thread, returns it instead of creating a duplicate" })),
         creatorUserId: Type.Optional(Type.String({ description: "Discord user ID of the human who requested the project — auto-added so thread shows in their sidebar" })),
       }),
       async execute(_id, params) {
         assertPermission("create_project_thread", config);
+        // Idempotent: if project already has a thread, return it
+        if (params.projectId) {
+          const existing = projectMgr.readProject(params.projectId as string);
+          if (existing?.threadId) {
+            return { threadId: existing.threadId, threadName: `(existing thread)`, alreadyExisted: true };
+          }
+        }
         if (!discordApi.isAvailable) return { error: "Discord API not available — no bot token configured" };
         const projectName = params.projectName as string;
         const agentIds = params.agentIds as string[];
