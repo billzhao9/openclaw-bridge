@@ -58,7 +58,11 @@ export class DiscordApi {
       const text = await res.text();
       throw new Error(`Discord API ${method} ${path} failed: ${res.status} ${text.substring(0, 200)}`);
     }
-    return res.json();
+    // Handle 204 No Content (e.g., PUT /thread-members returns empty body)
+    if (res.status === 204) return {};
+    const text = await res.text();
+    if (!text) return {};
+    return JSON.parse(text);
   }
 
   /**
