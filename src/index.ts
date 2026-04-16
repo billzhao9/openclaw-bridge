@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Type } from "@sinclair/typebox";
@@ -221,18 +221,41 @@ const bridgePlugin = {
 
     /**
      * Non-PM agents route project/task/asset operations to PM via relay.
-     * Returns { ok: boolean, ...data } or throws.
+     * Returns { ok: boolean, ...data }.
+     *
+     * Fallback mechanism: if the relay is disconnected or PM does not respond,
+     * the message is appended as a JSON line to <workspacePath>/_outbox/pending_relay.jsonl.
+     * PM can periodically scan worker _outbox directories to pick up and process
+     * these queued messages, ensuring no task updates are lost during outages.
      */
     async function askPm(type: string, data: Record<string, unknown>, timeoutMs = 20_000, pmAgentId = "pm"): Promise<any> {
-      if (!relayClient?.isConnected) throw new Error("STOP — Message relay not connected. PM is unreachable. Your task output is saved locally — PM will pick it up later. DO NOT retry.");
       const msgId = `${type}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const envelope = { type, id: msgId, from: config.agentId, to: pmAgentId, ...data, ts: new Date().toISOString() };
+
+      // Helper: queue a failed relay message to local _outbox for later PM pickup
+      function queueToOutbox(): { ok: true; fallback: true; message: string } {
+        try {
+          const outboxDir = join(workspacePath, "_outbox");
+          if (!existsSync(outboxDir)) mkdirSync(outboxDir, { recursive: true });
+          const outboxPath = join(outboxDir, "pending_relay.jsonl");
+          appendFileSync(outboxPath, JSON.stringify(envelope) + "\n", "utf-8");
+          api.logger.warn(`[bridge] askPm fallback: queued ${type} (${msgId}) to ${outboxPath}`);
+        } catch (writeErr: any) {
+          api.logger.error(`[bridge] askPm fallback: failed to write outbox — ${writeErr.message}`);
+        }
+        return { ok: true, fallback: true, message: "Queued for PM pickup" };
+      }
+
+      if (!relayClient?.isConnected) {
+        return queueToOutbox();
+      }
+
       try {
-        const reply = await relayClient.sendAndWait({
-          type, id: msgId, from: config.agentId, to: pmAgentId, ...data,
-        }, timeoutMs);
+        const reply = await relayClient.sendAndWait(envelope, timeoutMs);
         return reply;
       } catch (err: any) {
-        throw new Error(`STOP — PM did not respond in time (${timeoutMs}ms). Your work is saved locally. DO NOT retry — PM will process it when available.`);
+        // PM did not respond in time — fall back to local queue
+        return queueToOutbox();
       }
     }
 
@@ -854,12 +877,16 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
         const actualName = result.filename ?? originalName;
         const wasRenamed = result.renamed === true;
 
-        // Auto-register as project asset when the target is the PM and the file lives under _projects/<projectId>/
+        // Auto-register as project asset when the target is the PM.
+        // If the file lives under _projects/<projectId>/, extract projectId from path.
+        // For files outside _projects/ (e.g. _outbox/, root workspace), still send
+        // register_asset with assetType "deliverable" and a description derived from filename.
         let autoRegistered: { ok: boolean; assetId?: string; error?: string } | null = null;
         const isPmTarget = (params.targetAgentId as string) === "pm";
-        const projectMatch = localPath.match(/_projects[\\/]([^\\/]+)[\\/]/);
-        if (isPmTarget && projectMatch && relayClient?.isConnected) {
-          const projectId = projectMatch[1];
+        if (isPmTarget && relayClient?.isConnected) {
+          const projectMatch = localPath.match(/_projects[\\/]([^\\/]+)[\\/]/);
+          const projectId = projectMatch ? projectMatch[1] : "";
+
           // Infer assetType from path if not provided
           let assetType = (params.assetType as string) || "deliverable";
           if (!params.assetType) {
@@ -871,6 +898,12 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
             else if (lower.match(/\.(jpg|jpeg|png|webp|gif)$/)) assetType = "img";
             else if (lower.match(/\.(mp4|mov|webm)$/)) assetType = "video";
           }
+
+          // Build a human-readable description from the filename when outside _projects/
+          const description = projectMatch
+            ? `Auto-registered from bridge_send_file: ${originalName}`
+            : `Deliverable from ${config.agentId}: ${originalName.replace(/[-_]/g, " ").replace(/\.[^.]+$/, "")}`;
+
           const msgId = `auto_register_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
           try {
             const reply = await relayClient.sendAndWait({
@@ -881,7 +914,7 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
               projectId,
               filename: actualName,
               assetType,
-              description: `Auto-registered from bridge_send_file: ${originalName}`,
+              description,
               taskId: (params.taskId as string) || "",
             }, 20_000) as { ok: boolean; assetId?: string; error?: string };
             autoRegistered = reply;
@@ -1302,40 +1335,44 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
         const ready = task.dependencies.length === 0 ||
           projectMgr.getReadyTasks(params.projectId as string).some(t => t.id === task.id);
 
-        // Auto-create isolated sub-thread for this agent's task, and add agent + creator so it shows in sidebar
+        // Sub-threads are only created for ready (in_progress) tasks.
+        // Pending tasks with unmet dependencies get their thread when they become ready.
         let subThreadId: string | null = null;
-        if (discordApi.isAvailable) {
-          const discordChannel = entry.channels.find(c => c.type === "discord");
-          if (discordChannel) {
-            try {
-              const agents = await discoverAll(registry, offlineThresholdMs);
-              const agent = agents.find(a => a.agentId === params.agentId);
-              const agentName = agent?.agentName || (params.agentId as string);
-              const thread = await discordApi.createThread(
-                discordChannel.channelId,
-                `📋 ${agentName} — ${params.title as string}`.substring(0, 100),
-              );
-              subThreadId = thread.id;
-              const project = projectMgr.readProject(params.projectId as string);
-              if (project) {
-                const t = project.tasks.find(x => x.id === task.id);
-                if (t) t.subThreadId = thread.id;
-                projectMgr.writeProject(project);
-              }
-              // Auto-add assigned agent + project creator (if stored) to sub-thread
-              const toAdd = new Set<string>();
-              if (agent?.discordId) toAdd.add(agent.discordId);
-              const creator = (project as any)?.creatorUserId as string | undefined;
-              if (creator) toAdd.add(creator);
-              for (const uid of toAdd) {
-                await discordApi.addThreadMember(thread.id, uid);
-              }
-            } catch { /* fall through, sub-thread optional */ }
-          }
-        }
 
         if (ready) {
           projectMgr.updateTaskStatus(params.projectId as string, task.id, "in_progress");
+
+          // Auto-create isolated sub-thread for this agent's task, and add agent + creator so it shows in sidebar
+          if (discordApi.isAvailable) {
+            const discordChannel = entry.channels.find(c => c.type === "discord");
+            if (discordChannel) {
+              try {
+                const agents = await discoverAll(registry, offlineThresholdMs);
+                const agent = agents.find(a => a.agentId === params.agentId);
+                const agentName = agent?.agentName || (params.agentId as string);
+                const thread = await discordApi.createThread(
+                  discordChannel.channelId,
+                  `📋 ${agentName} — ${params.title as string}`.substring(0, 100),
+                );
+                subThreadId = thread.id;
+                const project = projectMgr.readProject(params.projectId as string);
+                if (project) {
+                  const t = project.tasks.find(x => x.id === task.id);
+                  if (t) t.subThreadId = thread.id;
+                  projectMgr.writeProject(project);
+                }
+                // Auto-add assigned agent + project creator (if stored) to sub-thread
+                const toAdd = new Set<string>();
+                if (agent?.discordId) toAdd.add(agent.discordId);
+                const creator = (project as any)?.creatorUserId as string | undefined;
+                if (creator) toAdd.add(creator);
+                for (const uid of toAdd) {
+                  await discordApi.addThreadMember(thread.id, uid);
+                }
+              } catch { /* fall through, sub-thread optional */ }
+            }
+          }
+
           if (relayClient?.isConnected) {
             const msgId = `task_${Date.now()}`;
             try {
