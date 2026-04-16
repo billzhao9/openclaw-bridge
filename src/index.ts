@@ -1493,7 +1493,7 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
     api.registerTool({
       name: "bridge_task_assign",
       label: "Bridge Task Assign",
-      description: "Assign a task to an agent within a project. Sends the brief via Bridge Hub and auto-creates an isolated sub-thread for the agent.",
+      description: "Assign a task to an agent within a project. Sends the brief via Bridge Hub relay.",
       parameters: Type.Object({
         projectId: Type.String({ description: "Project ID" }),
         agentId: Type.String({ description: "Agent to assign to" }),
@@ -1515,43 +1515,8 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
         const ready = task.dependencies.length === 0 ||
           projectMgr.getReadyTasks(params.projectId as string).some(t => t.id === task.id);
 
-        // Sub-threads are only created for ready (in_progress) tasks.
-        // Pending tasks with unmet dependencies get their thread when they become ready.
-        let subThreadId: string | null = null;
-
         if (ready) {
           projectMgr.updateTaskStatus(params.projectId as string, task.id, "in_progress");
-
-          // Auto-create isolated sub-thread for this agent's task, and add agent + creator so it shows in sidebar
-          if (discordApi.isAvailable) {
-            const discordChannel = entry.channels.find(c => c.type === "discord");
-            if (discordChannel) {
-              try {
-                const agents = await discoverAll(registry, offlineThresholdMs);
-                const agent = agents.find(a => a.agentId === params.agentId);
-                const agentName = agent?.agentName || (params.agentId as string);
-                const thread = await discordApi.createThread(
-                  discordChannel.channelId,
-                  `📋 ${agentName} — ${params.title as string}`.substring(0, 100),
-                );
-                subThreadId = thread.id;
-                const project = projectMgr.readProject(params.projectId as string);
-                if (project) {
-                  const t = project.tasks.find(x => x.id === task.id);
-                  if (t) t.subThreadId = thread.id;
-                  projectMgr.writeProject(project);
-                }
-                // Auto-add assigned agent + project creator (if stored) to sub-thread
-                const toAdd = new Set<string>();
-                if (agent?.discordId) toAdd.add(agent.discordId);
-                const creator = (project as any)?.creatorUserId as string | undefined;
-                if (creator) toAdd.add(creator);
-                for (const uid of toAdd) {
-                  await discordApi.addThreadMember(thread.id, uid);
-                }
-              } catch { /* fall through, sub-thread optional */ }
-            }
-          }
 
           if (relayClient?.isConnected) {
             const msgId = `task_${Date.now()}`;
@@ -1567,7 +1532,7 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
           }
         }
 
-        return { taskId: task.id, status: ready ? "in_progress" : "pending", subThreadId };
+        return { taskId: task.id, status: ready ? "in_progress" : "pending" };
       },
     });
 
