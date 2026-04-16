@@ -158,6 +158,67 @@ const bridgePlugin = {
 
     const offlineThresholdMs = config.offlineThresholdMs ?? 120_000;
 
+    // Extract Discord channels at init time so entry.channels is populated immediately.
+    // This is critical because hot-reloads call init() but NOT start()/heartbeat.start().
+    // Without this, entry.channels stays [] until the first heartbeat tick.
+    function extractChannelsFromConfig(): Array<{ type: string; channelId: string; name: string }> {
+      const candidates = [
+        process.env.OPENCLAW_CONFIG_PATH,
+        process.env.OPENCLAW_HOME ? join(process.env.OPENCLAW_HOME, "openclaw.json") : "",
+        join(homedir(), ".openclaw", "openclaw.json"),
+      ].filter(Boolean) as string[];
+      const configPath = candidates.find(p => existsSync(p));
+      if (!configPath) { api.logger.warn("[bridge] init-time channel extraction: no config file found"); return []; }
+      try {
+        const raw = readFileSync(configPath, "utf-8");
+        const cfg = JSON.parse(raw) as any;
+        const accounts = cfg.channels?.discord?.accounts;
+        if (!accounts || typeof accounts !== "object") return [];
+        const result: Array<{ type: string; channelId: string; name: string }> = [];
+        const seen = new Set<string>();
+        for (const account of Object.values(accounts) as any[]) {
+          if (account.guilds && typeof account.guilds === "object") {
+            for (const guild of Object.values(account.guilds) as any[]) {
+              if (guild.channels && typeof guild.channels === "object") {
+                for (const channelId of Object.keys(guild.channels)) {
+                  if (channelId && /^\d+$/.test(channelId) && !seen.has(channelId)) {
+                    seen.add(channelId);
+                    result.push({ type: "discord", channelId, name: channelId });
+                  }
+                }
+              }
+            }
+          }
+        }
+        if (result.length > 0) api.logger.info(`[bridge] init-time channel extraction: ${result.length} channels found`);
+        return result;
+      } catch { return []; }
+    }
+
+    // Also detect discordId from token at init time
+    function detectDiscordIdFromConfig(): string | null {
+      const candidates = [
+        process.env.OPENCLAW_CONFIG_PATH,
+        process.env.OPENCLAW_HOME ? join(process.env.OPENCLAW_HOME, "openclaw.json") : "",
+        join(homedir(), ".openclaw", "openclaw.json"),
+      ].filter(Boolean) as string[];
+      const configPath = candidates.find(p => existsSync(p));
+      if (!configPath) return null;
+      try {
+        const raw = readFileSync(configPath, "utf-8");
+        const cfg = JSON.parse(raw) as any;
+        const accounts = cfg.channels?.discord?.accounts;
+        if (!accounts) return null;
+        for (const account of Object.values(accounts) as any[]) {
+          if (account.token) {
+            const decoded = Buffer.from(account.token.split(".")[0], "base64").toString("utf-8");
+            if (/^\d+$/.test(decoded)) return decoded;
+          }
+        }
+      } catch {}
+      return null;
+    }
+
     /**
      * Non-PM agents route project/task/asset operations to PM via relay.
      * Returns { ok: boolean, ...data } or throws.
@@ -183,10 +244,10 @@ const bridgePlugin = {
       host: "localhost",
       port,
       workspacePath,
-      discordId: null,
+      discordId: detectDiscordIdFromConfig(),
       role: config.role,
       capabilities: [],
-      channels: [],
+      channels: extractChannelsFromConfig(),
       registeredAt: new Date().toISOString(),
       lastHeartbeat: new Date().toISOString(),
       status: "online",
@@ -1141,8 +1202,10 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
         };
 
         // Auto-create Discord Thread for project visibility
+        api.logger.info(`[bridge_project_create] discordApi.isAvailable=${discordApi.isAvailable} entry.channels=${JSON.stringify(entry.channels)}`);
         if (discordApi.isAvailable) {
           const discordChannel = entry.channels.find(c => c.type === "discord");
+          api.logger.info(`[bridge_project_create] discordChannel=${JSON.stringify(discordChannel)}`);
           if (discordChannel) {
             try {
               const agentIds = (params.agentIds as string[]) || [];
