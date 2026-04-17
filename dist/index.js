@@ -225,6 +225,57 @@ const bridgePlugin = {
             return null;
         }
         /**
+         * Resolve an agent's Discord ID by scanning local instance configs.
+         * Since all instances are on the same machine, we can read their openclaw.json
+         * directly. This is more reliable than the registry which may not store discordId.
+         */
+        function resolveAgentDiscordId(agentId) {
+            // Try registry first (fast, might work)
+            try {
+                const agents = registry.getCachedAgents?.() ?? [];
+                const cached = agents.find((a) => a.agentId === agentId);
+                if (cached?.discordId)
+                    return cached.discordId;
+            }
+            catch { }
+            // Fallback: scan local openclaw-instances directory for the agent's config
+            const instancesDir = process.env.OPENCLAW_CONFIG_PATH
+                ? join(process.env.OPENCLAW_CONFIG_PATH, "..", "..") // e.g., C:\openclaw-instances\pm\openclaw.json → C:\openclaw-instances
+                : "";
+            if (!instancesDir || !existsSync(instancesDir))
+                return null;
+            try {
+                const dirs = readdirSync(instancesDir);
+                for (const dir of dirs) {
+                    const configPath = join(instancesDir, dir, "openclaw.json");
+                    if (!existsSync(configPath))
+                        continue;
+                    try {
+                        const raw = readFileSync(configPath, "utf-8");
+                        const cfg = JSON.parse(raw);
+                        // Check if this config's bridge agentId matches
+                        const bridgeConfig = cfg.plugins?.entries?.["openclaw-bridge"]?.config;
+                        if (bridgeConfig?.agentId === agentId) {
+                            // Found the right instance — decode discordId from its Discord token
+                            const accounts = cfg.channels?.discord?.accounts;
+                            if (accounts) {
+                                for (const acc of Object.values(accounts)) {
+                                    if (acc.token) {
+                                        const decoded = Buffer.from(acc.token.split(".")[0], "base64").toString("utf-8");
+                                        if (/^\d+$/.test(decoded))
+                                            return decoded;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch { /* skip this config */ }
+                }
+            }
+            catch { }
+            return null;
+        }
+        /**
          * Non-PM agents route project/task/asset operations to PM via relay.
          * Returns { ok: boolean, ...data }.
          *
@@ -1457,38 +1508,7 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
                     try {
                         const project = projectMgr.readProject(params.projectId);
                         if (project?.threadId) {
-                            // Try registry first, then fallback to reading agent's config directly
-                            const agents = await discoverAll(registry, offlineThresholdMs);
-                            const agent = agents.find(a => a.agentId === params.agentId);
-                            let agentDiscordId = agent?.discordId;
-                            // Fallback: if registry doesn't have discordId, decode from agent's config
-                            if (!agentDiscordId && agent?.workspacePath) {
-                                try {
-                                    const agentConfigCandidates = [
-                                        join(agent.workspacePath, "..", "openclaw.json"),
-                                    ];
-                                    for (const cp of agentConfigCandidates) {
-                                        if (existsSync(cp)) {
-                                            const raw = readFileSync(cp, "utf-8");
-                                            const cfg = JSON.parse(raw);
-                                            const accs = cfg.channels?.discord?.accounts;
-                                            if (accs) {
-                                                for (const acc of Object.values(accs)) {
-                                                    if (acc.token) {
-                                                        const decoded = Buffer.from(acc.token.split(".")[0], "base64").toString("utf-8");
-                                                        if (/^\d+$/.test(decoded)) {
-                                                            agentDiscordId = decoded;
-                                                            break;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            break;
-                                        }
-                                    }
-                                }
-                                catch { /* fallback failed */ }
-                            }
+                            const agentDiscordId = resolveAgentDiscordId(params.agentId);
                             if (agentDiscordId) {
                                 await discordApi.addThreadMember(project.threadId, agentDiscordId);
                                 api.logger.info(`[task_assign] Added ${params.agentId} (${agentDiscordId}) to thread ${project.threadId}`);
