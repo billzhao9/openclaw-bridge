@@ -41,6 +41,21 @@ export function buildMentionMap(agents: RegistryEntry[]): MentionMap[] {
 }
 
 /**
+ * Add custom name→mention entries (e.g., user names from project context).
+ */
+export function addCustomMentions(maps: MentionMap[], entries: Array<{ name: string; discordId: string }>): MentionMap[] {
+  for (const { name, discordId } of entries) {
+    if (!name || !discordId || name.length < 2) continue;
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    maps.push({
+      pattern: new RegExp(`@${escaped}\\b`, "gi"),
+      replacement: `<@${discordId}>`,
+    });
+  }
+  return maps;
+}
+
+/**
  * Replace agent names in text with Discord <@ID> mentions.
  * Skips text already in mention format.
  */

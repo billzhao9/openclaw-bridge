@@ -976,6 +976,23 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
 不要建议用户去其他频道或 @mention，这些工具通过 Hub 中转，无需共同频道。
 </messaging>`;
             }
+            // For PM: inject active project user mention mappings
+            if (config.isProjectManager) {
+                try {
+                    const projects = projectMgr.listProjects();
+                    const userMentions = new Set();
+                    for (const p of projects.activeProjects || []) {
+                        const proj = projectMgr.readProject(p.id);
+                        if (proj?.creatorUserId) {
+                            userMentions.add(`<@${proj.creatorUserId}>`);
+                        }
+                    }
+                    if (userMentions.size > 0) {
+                        context += `\n<user-mentions>\nWhen mentioning the user/requester, ALWAYS use this exact Discord mention format: ${[...userMentions].join(', ')}\nNEVER use plain @username — it won't notify them.\n</user-mentions>`;
+                    }
+                }
+                catch { /* best-effort */ }
+            }
             // Add session status if in handoff (proxy side)
             const session = proxySession.getSession();
             api.logger.info(`[bridge] before_prompt_build: handoff=${session ? 'YES session=' + session.sessionId + ' target=' + session.currentAgent : 'NO'}`);
