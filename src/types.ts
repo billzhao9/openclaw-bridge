@@ -119,17 +119,23 @@ export interface TaskData {
   id: string;
   agent: string;
   title: string;
-  brief: string;
+  brief: string;                // Keep short — reference files instead of inline content
   status: TaskStatus;
   subThreadId: string | null;
-  dependencies: string[];
+  dependencies: string[];       // Array of task IDs (NOT agent IDs)
   rounds: number;
   maxRounds: number;
-  outputs: string[];
+  outputs: string[];            // Legacy: flat file path list
+  deliverables?: Array<{        // Structured deliverable tracking
+    path: string;
+    type: string;               // brief, script, asset-list, manifest, img, video
+    submittedAt: string;
+  }>;
   blockType: BlockType | null;
   blockReason: string | null;
   reworkCount: number;
   assignedAt: string;
+  updatedAt?: string;           // Last status change
   completedAt: string | null;
 }
 
@@ -139,9 +145,14 @@ export interface ProjectData {
   id: string;
   name: string;
   description: string;
+  projectDir?: string;          // Absolute path to project directory
   threadId: string | null;
   status: ProjectStatus;
   createdAt: string;
+  updatedAt?: string;           // Last status change timestamp
+  creatorUserId?: string;       // Discord user ID who requested the project
+  assetListPath?: string;       // Path to asset_list.json (Bot1 T3 output)
+  manifestPath?: string;        // Path to manifest.json (Bot4 T4 output)
   tasks: TaskData[];
   assets: AssetData[];
   totalRounds: number;

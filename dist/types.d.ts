@@ -111,10 +111,16 @@ export interface TaskData {
     rounds: number;
     maxRounds: number;
     outputs: string[];
+    deliverables?: Array<{
+        path: string;
+        type: string;
+        submittedAt: string;
+    }>;
     blockType: BlockType | null;
     blockReason: string | null;
     reworkCount: number;
     assignedAt: string;
+    updatedAt?: string;
     completedAt: string | null;
 }
 export type ProjectStatus = "in_progress" | "waiting_clarification" | "completed" | "paused" | "cancelled";
@@ -122,9 +128,14 @@ export interface ProjectData {
     id: string;
     name: string;
     description: string;
+    projectDir?: string;
     threadId: string | null;
     status: ProjectStatus;
     createdAt: string;
+    updatedAt?: string;
+    creatorUserId?: string;
+    assetListPath?: string;
+    manifestPath?: string;
     tasks: TaskData[];
     assets: AssetData[];
     totalRounds: number;

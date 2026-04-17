@@ -106,16 +106,22 @@ export class ProjectManager {
     const id = slug ? `${slug}-${uniq}` : generateId("proj");
 
     const dir = this.getProjectDir(id);
-    mkdirSync(join(dir, "assets"), { recursive: true });
+    mkdirSync(join(dir, "assets", "characters"), { recursive: true });
+    mkdirSync(join(dir, "assets", "scenes"), { recursive: true });
+    mkdirSync(join(dir, "assets", "props"), { recursive: true });
     mkdirSync(join(dir, "briefs"), { recursive: true });
+    mkdirSync(join(dir, "storyboard", "prompts"), { recursive: true });
+    mkdirSync(join(dir, "output"), { recursive: true });
 
     const project: ProjectData = {
       id,
       name,
       description,
+      projectDir: dir,
       threadId: null,
       status: "in_progress",
       createdAt: nowIso(),
+      updatedAt: nowIso(),
       tasks: [],
       assets: [],
       totalRounds: 0,
@@ -236,6 +242,8 @@ export class ProjectManager {
     }
 
     task.status = status;
+    task.updatedAt = nowIso();
+    project.updatedAt = nowIso();
 
     if (status === "completed") {
       task.completedAt = nowIso();
