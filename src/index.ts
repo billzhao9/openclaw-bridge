@@ -840,7 +840,9 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
                     for (const project of activeProjects) {
                       if (!project) continue;
                       const slug = project.id.replace(/-[a-f0-9]{10}$/, ''); // remove UUID suffix
-                      if (file.toLowerCase().includes(slug.toLowerCase()) || file.includes(project.id)) {
+                      // Normalize: replace hyphens/underscores with spaces for fuzzy matching
+                      const normalize = (s: string) => s.toLowerCase().replace(/[-_]/g, ' ');
+                      if (normalize(file).includes(normalize(slug)) || file.includes(project.id) || normalize(file).includes(normalize(project.name || ''))) {
                         // Infer asset type from filename
                         let assetType = 'deliverable';
                         const lower = file.toLowerCase();
