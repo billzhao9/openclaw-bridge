@@ -706,6 +706,63 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
                   await discordApi.sendMessage(project.threadId, `✅ **${task.title}** completed by ${agentName}. ${msg.summary || ""}`);
                 }
                 replyOk(msg, 'task_complete_reply', { taskId: task.id, status: "completed" });
+
+                // ── AUTO-PROGRESSION: check for unblocked downstream tasks ──
+                if (project) {
+                  const readyTasks = projectMgr.getReadyTasks(msg.projectId as string);
+                  for (const nextTask of readyTasks) {
+                    if (nextTask.status !== "pending") continue;
+                    api.logger.info(`[auto-progress] Task ${nextTask.id} (${nextTask.agent}) unblocked — auto-assigning`);
+                    projectMgr.updateTaskStatus(msg.projectId as string, nextTask.id, "in_progress");
+
+                    // Auto-add next agent to thread
+                    const nextDiscordId = resolveAgentDiscordId(nextTask.agent);
+                    if (nextDiscordId && project.threadId) {
+                      await discordApi.addThreadMember(project.threadId, nextDiscordId).catch(() => {});
+                    }
+
+                    // Send task via relay
+                    if (relayClient?.isConnected) {
+                      try {
+                        await relayClient.sendAndWait({
+                          type: "message", id: `auto_${Date.now()}`,
+                          from: config.agentId, to: nextTask.agent,
+                          payload: `[Project: ${msg.projectId}] [Task: ${nextTask.id}]\n\n⚠️ IMPORTANT: Use EXACTLY these IDs:\n- projectId: "${msg.projectId}"\n- taskId: "${nextTask.id}"\n\n${nextTask.brief}`,
+                        }, 120_000);
+                      } catch { /* agent may not reply immediately */ }
+                    }
+
+                    // Notify in thread
+                    if (project.threadId && discordApi.isAvailable) {
+                      const nextAgentMention = nextDiscordId ? `<@${nextDiscordId}>` : nextTask.agent;
+                      await discordApi.sendMessage(project.threadId, `🔄 **${nextTask.title}** now assigned to ${nextAgentMention}. Task unblocked by completion of ${task.title}.`);
+                    }
+                  }
+
+                  // ── AUTO-COMPLETION: if ALL tasks done, notify user in main channel ──
+                  const updatedProject = projectMgr.readProject(msg.projectId as string);
+                  if (updatedProject && updatedProject.tasks.every(t => t.status === "completed")) {
+                    api.logger.info(`[auto-progress] All tasks complete for ${msg.projectId} — posting final notice`);
+                    updatedProject.status = "completed";
+                    updatedProject.updatedAt = new Date().toISOString();
+                    projectMgr.writeProject(updatedProject);
+
+                    // Post completion to project thread
+                    if (updatedProject.threadId && discordApi.isAvailable) {
+                      const deliverableList = updatedProject.tasks.map(t => `✅ ${t.title} (${t.agent})`).join("\n");
+                      await discordApi.sendMessage(updatedProject.threadId,
+                        `🎉 **Project Complete: ${updatedProject.name}**\n\n${deliverableList}\n\nAll deliverables are in the project directory.`);
+                    }
+
+                    // Post completion to MAIN CHANNEL
+                    const discordChannel = entry.channels.find(c => c.type === "discord");
+                    if (discordChannel && discordApi.isAvailable) {
+                      const userMention = (updatedProject as any).creatorUserId ? `<@${(updatedProject as any).creatorUserId}>` : "User";
+                      await discordApi.sendMessage(discordChannel.channelId,
+                        `🎉 ${userMention} — **${updatedProject.name}** is complete! All deliverables are posted in the project thread.`);
+                    }
+                  }
+                }
               } catch (err: any) { replyErr(msg, 'task_complete_reply', err.message); }
             });
 
