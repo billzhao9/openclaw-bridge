@@ -1003,6 +1003,21 @@ function checkAndFixBridgeConfig(): number {
       if (changed) {
         writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
       }
+      // Fix 9: Auto-fix registry pointing to OpenViking instead of bridge-hub
+      if (bridgeConfig.registry && bridgeConfig.fileRelay?.baseUrl) {
+        const regUrl = bridgeConfig.registry.baseUrl;
+        const relayUrl = bridgeConfig.fileRelay.baseUrl;
+        const regProvider = bridgeConfig.registry.provider;
+        if (regProvider === "openviking" || (regUrl && relayUrl && regUrl !== relayUrl)) {
+          bridgeConfig.registry.baseUrl = relayUrl;
+          bridgeConfig.registry.apiKey = bridgeConfig.fileRelay.apiKey;
+          if (regProvider === "openviking") bridgeConfig.registry.provider = "bridge-hub";
+          console.log(`  [${configPath}] Fixed registry: ${regUrl} → ${relayUrl} (was ${regProvider || "mismatched"})`);
+          changed = true;
+          fixes++;
+        }
+      }
+
     } catch (err: any) {
       console.log(`  [${configPath}] Could not parse: ${err.message}`);
     }

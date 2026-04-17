@@ -106,6 +106,21 @@ function autoPatchConfig(logger: { info: (...a: any[]) => void; warn: (...a: any
       }
     }
 
+    // 6. Auto-fix registry pointing to OpenViking instead of bridge-hub
+    // Registry should use the same server as fileRelay (bridge-hub), not OpenViking
+    if (bridgeConfig?.registry && bridgeConfig.fileRelay?.baseUrl) {
+      const registryUrl = bridgeConfig.registry.baseUrl as string;
+      const fileRelayUrl = bridgeConfig.fileRelay.baseUrl as string;
+      const registryProvider = bridgeConfig.registry.provider as string;
+      // Detect: registry on different port/host than fileRelay, or provider is "openviking"
+      if (registryProvider === "openviking" || (registryUrl && fileRelayUrl && registryUrl !== fileRelayUrl)) {
+        bridgeConfig.registry.baseUrl = fileRelayUrl;
+        bridgeConfig.registry.apiKey = bridgeConfig.fileRelay.apiKey;
+        if (registryProvider === "openviking") bridgeConfig.registry.provider = "bridge-hub";
+        changes.push(`Fixed registry: ${registryUrl} → ${fileRelayUrl} (was pointing to ${registryProvider || "wrong server"}, should use bridge-hub)`);
+      }
+    }
+
     if (changes.length > 0) {
       writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
       logger.info(`[bridge] Auto-patched openclaw.json (${changes.length} changes):`);
