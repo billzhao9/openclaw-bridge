@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Type } from "@sinclair/typebox";
@@ -840,9 +840,18 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
                     for (const project of activeProjects) {
                       if (!project) continue;
                       const slug = project.id.replace(/-[a-f0-9]{10}$/, ''); // remove UUID suffix
-                      // Normalize: replace hyphens/underscores with spaces for fuzzy matching
+                      // Fuzzy matching: normalize separators, also match by keyword overlap
                       const normalize = (s: string) => s.toLowerCase().replace(/[-_]/g, ' ');
-                      if (normalize(file).includes(normalize(slug)) || file.includes(project.id) || normalize(file).includes(normalize(project.name || ''))) {
+                      const fileNorm = normalize(file);
+                      const slugNorm = normalize(slug);
+                      const nameNorm = normalize(project.name || '');
+                      // Direct inclusion match
+                      const directMatch = fileNorm.includes(slugNorm) || file.includes(project.id) || (nameNorm && fileNorm.includes(nameNorm));
+                      // Keyword overlap: match if 2+ significant words from slug appear in filename
+                      const slugWords = slugNorm.split(' ').filter(w => w.length > 3);
+                      const matchingWords = slugWords.filter(w => fileNorm.includes(w));
+                      const keywordMatch = slugWords.length >= 2 && matchingWords.length >= 2;
+                      if (directMatch || keywordMatch) {
                         // Infer asset type from filename
                         let assetType = 'deliverable';
                         const lower = file.toLowerCase();
@@ -862,6 +871,8 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
                         );
                         if (asset) {
                           api.logger.info(`[inbox-organizer] Registered ${file} -> project ${project.id} as ${assetType}`);
+                          // Delete source file from inbox to prevent re-registration
+                          try { unlinkSync(filePath); } catch { /* file may have been moved by publishAsset */ }
                           matched = true;
                           break;
                         }
