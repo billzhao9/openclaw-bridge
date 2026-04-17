@@ -229,14 +229,7 @@ const bridgePlugin = {
      * directly. This is more reliable than the registry which may not store discordId.
      */
     function resolveAgentDiscordId(agentId: string): string | null {
-      // Try registry first (fast, might work)
-      try {
-        const agents = registry.getCachedAgents?.() ?? [];
-        const cached = agents.find((a: any) => a.agentId === agentId);
-        if (cached?.discordId) return cached.discordId;
-      } catch {}
-
-      // Fallback: scan local openclaw-instances directory for the agent's config
+      // Scan local openclaw-instances directory for the agent's config
       const instancesDir = process.env.OPENCLAW_CONFIG_PATH
         ? join(process.env.OPENCLAW_CONFIG_PATH, "..", "..")  // e.g., C:\openclaw-instances\pm\openclaw.json → C:\openclaw-instances
         : "";
