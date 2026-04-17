@@ -362,9 +362,15 @@ const bridgePlugin = {
         const online = agents.filter((a) => a.status === "online");
 
         const lines = online.map((a) => {
-          const discordMention = a.discordId ? `<@${a.discordId}>` : "（未连接Discord）";
-          return `- ${a.agentName} (${a.agentId}) — ${discordMention}${a.agentId === config.agentId ? " ← 你自己" : ""}`;
+          const discordMention = a.discordId ? `<@${a.discordId}>` : "(no Discord)";
+          return `- ${a.agentName} (${a.agentId}) — ${discordMention}${a.agentId === config.agentId ? " ← you" : ""}`;
         });
+
+        // Build explicit mention lookup table for the model
+        const mentionTable = online
+          .filter(a => a.discordId && a.agentId !== config.agentId)
+          .map(a => `@${a.agentName} or @${a.agentId} → must write: <@${a.discordId}>`)
+          .join("\n");
 
         const superuserNote = config.role === "superuser"
           ? "\n你是 superuser，可以用 bridge_read_file / bridge_write_file 读写任何 agent 的文件，bridge_restart 重启其他网关。"
@@ -382,9 +388,11 @@ Online gateways (${online.length}):
 ${lines.join("\n")}
 ${superuserNote}
 
-### Core Rule: Use Discord mention for ALL cross-gateway communication
-When notifying another agent (sending files, messages, assigning tasks), you **MUST mention them using <@discordId> format**.
-The mention format is listed next to each agent above — copy and use it exactly.
+### ⚠️ Discord Mention Rule (CRITICAL)
+NEVER write @AgentName in plain text. ALWAYS use the <@ID> format below:
+${mentionTable}
+
+Copy the exact <@ID> string. Plain @mentions like @Bot2-ScriptWriter will NOT notify anyone.
 
 ### File Sending Workflow (every step mandatory)
 1. Call bridge_send_file to send the file
