@@ -203,19 +203,23 @@ const bridgePlugin = {
         join(homedir(), ".openclaw", "openclaw.json"),
       ].filter(Boolean) as string[];
       const configPath = candidates.find(p => existsSync(p));
-      if (!configPath) return null;
+      if (!configPath) { api.logger.warn("[bridge] detectDiscordId: no config file found from candidates: " + candidates.join(", ")); return null; }
       try {
         const raw = readFileSync(configPath, "utf-8");
         const cfg = JSON.parse(raw) as any;
         const accounts = cfg.channels?.discord?.accounts;
-        if (!accounts) return null;
+        if (!accounts) { api.logger.warn("[bridge] detectDiscordId: no discord accounts in config"); return null; }
         for (const account of Object.values(accounts) as any[]) {
           if (account.token) {
             const decoded = Buffer.from(account.token.split(".")[0], "base64").toString("utf-8");
-            if (/^\d+$/.test(decoded)) return decoded;
+            if (/^\d+$/.test(decoded)) {
+              api.logger.info(`[bridge] init-time discordId detected: ${decoded}`);
+              return decoded;
+            }
           }
         }
-      } catch {}
+        api.logger.warn("[bridge] detectDiscordId: no valid token found in any account");
+      } catch (err: any) { api.logger.error(`[bridge] detectDiscordId error: ${err.message}`); }
       return null;
     }
 
@@ -1520,13 +1524,46 @@ If blocked: call bridge_task_blocked with type and reason. Then STOP.
           try {
             const project = projectMgr.readProject(params.projectId as string);
             if (project?.threadId) {
+              // Try registry first, then fallback to reading agent's config directly
               const agents = await discoverAll(registry, offlineThresholdMs);
               const agent = agents.find(a => a.agentId === params.agentId);
-              if (agent?.discordId) {
-                await discordApi.addThreadMember(project.threadId, agent.discordId);
+              let agentDiscordId = agent?.discordId;
+
+              // Fallback: if registry doesn't have discordId, decode from agent's config
+              if (!agentDiscordId && agent?.workspacePath) {
+                try {
+                  const agentConfigCandidates = [
+                    join(agent.workspacePath, "..", "openclaw.json"),
+                  ];
+                  for (const cp of agentConfigCandidates) {
+                    if (existsSync(cp)) {
+                      const raw = readFileSync(cp, "utf-8");
+                      const cfg = JSON.parse(raw) as any;
+                      const accs = cfg.channels?.discord?.accounts;
+                      if (accs) {
+                        for (const acc of Object.values(accs) as any[]) {
+                          if (acc.token) {
+                            const decoded = Buffer.from(acc.token.split(".")[0], "base64").toString("utf-8");
+                            if (/^\d+$/.test(decoded)) { agentDiscordId = decoded; break; }
+                          }
+                        }
+                      }
+                      break;
+                    }
+                  }
+                } catch { /* fallback failed */ }
+              }
+
+              if (agentDiscordId) {
+                await discordApi.addThreadMember(project.threadId, agentDiscordId);
+                api.logger.info(`[task_assign] Added ${params.agentId} (${agentDiscordId}) to thread ${project.threadId}`);
+              } else {
+                api.logger.warn(`[task_assign] Cannot find discordId for ${params.agentId}`);
               }
             }
-          } catch { /* best-effort */ }
+          } catch (err: any) {
+            api.logger.error(`[task_assign] addThreadMember error: ${err.message}`);
+          }
         }
 
         if (ready) {
